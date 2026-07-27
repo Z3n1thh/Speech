@@ -14,6 +14,7 @@ if not exist ".venv\Scripts\pyinstaller.exe" (
   --windowed ^
   --name ScreenReadAloud ^
   --collect-all customtkinter ^
+  --collect-all edge_tts ^
   --hidden-import=win32timezone ^
   --hidden-import=win32com.client ^
   --hidden-import=win32clipboard ^

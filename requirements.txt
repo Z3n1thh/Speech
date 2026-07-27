@@ -5,4 +5,5 @@ keyboard>=0.13.5
 mss>=9.0.1
 winocr>=0.0.15
 pyttsx3>=2.90
+edge-tts>=6.1.9
 pywin32>=306

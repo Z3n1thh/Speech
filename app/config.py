@@ -27,9 +27,11 @@ DEFAULTS: dict[str, Any] = {
     "hotkey_stop": "ctrl+shift+x",
     "hotkey_faster": "ctrl+shift+up",
     "hotkey_slower": "ctrl+shift+down",
+    "engine": "edge",  # "edge" (neural, nicer) | "offline"
     "rate": 160,
     "volume": 1.0,
     "offline_voice": "",
+    "edge_voice": "en-US-JennyNeural",
     "auto_speak": True,
     "font_size": 18,
     "ocr_lang": _default_ocr_lang(),

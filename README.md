@@ -16,7 +16,7 @@ Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway
 
 - Screen **region OCR** (`Ctrl+Shift+R`)
 - **Selected text** reading (`Ctrl+Shift+S`)
-- Offline Windows voices only (no paid / gray-area cloud TTS)
+- Offline Windows voices **and** optional free Edge neural voices (same nicer voices as v1)
 - Word highlighting while speaking
 - Pause / resume, rate & volume, history
 - Simple mode (big buttons)
@@ -44,9 +44,9 @@ Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway
 | Tray | pystray | MIT / LGPL |
 | Images | Pillow | HPND |
 | OCR | Windows.Media.Ocr via winocr | Free Windows feature |
-| Speech | Windows SAPI via pyttsx3 | Free Windows feature + MPL-2.0 lib |
+| Speech | Windows SAPI via pyttsx3 + optional free Edge neural TTS | Free; Edge needs internet |
 
-No paid APIs. Edge/cloud TTS was removed so everything stays free and clearly legitimate.
+No paid APIs. Default engine is **edge** (natural voices). Switch to **offline** for fully local speech.
 
 For Swedish OCR on Windows (Admin PowerShell):
 
@@ -73,5 +73,7 @@ pip install pyinstaller
 
 ## Privacy
 
-- OCR and speech run on your PC
-- No account, no telemetry, no cloud TTS
+- OCR runs on your PC
+- Offline speech stays on your PC
+- Edge neural voices send text to Microsoft’s free Edge TTS only when that engine is selected
+- No account, no telemetry

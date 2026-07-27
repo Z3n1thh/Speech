@@ -191,6 +191,18 @@ class App(ctk.CTk):
 
         row1 = ctk.CTkFrame(self.controls, fg_color="transparent")
         row1.pack(fill="x", padx=12, pady=(12, 6))
+
+        ctk.CTkLabel(row1, text="Engine", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.engine_var = ctk.StringVar(value=str(self.settings.get("engine", "edge")))
+        self.engine_menu = ctk.CTkOptionMenu(
+            row1,
+            values=["edge", "offline"],
+            variable=self.engine_var,
+            width=110,
+            command=self._on_engine_change,
+        )
+        self.engine_menu.pack(side="left", padx=(8, 12))
+
         ctk.CTkLabel(row1, text="Voice", font=ctk.CTkFont(size=13)).pack(side="left")
         self.voice_var = ctk.StringVar(value="(default)")
         self.voice_menu = ctk.CTkOptionMenu(
@@ -200,7 +212,7 @@ class App(ctk.CTk):
             width=280,
             command=lambda _v: self._persist_from_widgets(),
         )
-        self.voice_menu.pack(side="left", padx=(8, 16))
+        self.voice_menu.pack(side="left", padx=(8, 12))
 
         ctk.CTkLabel(row1, text="OCR lang", font=ctk.CTkFont(size=13)).pack(side="left")
         self.lang_var = ctk.StringVar(value=str(self.settings.get("ocr_lang", "en")))
@@ -312,6 +324,8 @@ class App(ctk.CTk):
         self.status_label.pack(fill="x", padx=22, pady=(0, 14))
 
     def _apply_settings_to_widgets(self) -> None:
+        engine = str(self.settings.get("engine", "edge"))
+        self.engine_var.set(engine if engine in ("edge", "offline") else "edge")
         self.rate_slider.set(float(self.settings.get("rate", 160)))
         self.rate_label.configure(text=str(int(self.rate_slider.get())))
         self.volume_slider.set(float(self.settings.get("volume", 1.0)))
@@ -323,6 +337,9 @@ class App(ctk.CTk):
         self.simple_mode_var.set(bool(self.settings.get("simple_mode", False)))
         lang = str(self.settings.get("ocr_lang", "en"))
         self.lang_var.set(lang if lang in ("en", "sv") else "en")
+        # Prefer Swedish neural voice when OCR lang is Swedish and none saved
+        if self.lang_var.get() == "sv" and self.settings.get("edge_voice", "").startswith("en-"):
+            self.settings["edge_voice"] = "sv-SE-SofieNeural"
         self._update_text_font()
         self._update_hotkey_hint()
 
@@ -377,6 +394,7 @@ class App(ctk.CTk):
 
     # ---- settings ----
     def _persist_from_widgets(self) -> None:
+        self.settings["engine"] = self.engine_var.get()
         self.settings["rate"] = int(self.rate_slider.get())
         self.settings["volume"] = float(self.volume_slider.get())
         self.settings["font_size"] = int(self.font_slider.get())
@@ -386,11 +404,22 @@ class App(ctk.CTk):
         self.settings["autostart"] = bool(self.autostart_var.get())
         self.settings["ocr_lang"] = self.lang_var.get()
         voice = self.voice_var.get()
-        if voice == "(default)" or not voice:
-            self.settings["offline_voice"] = ""
+        voice_id = self._voice_map.get(voice, "")
+        if self.settings["engine"] == "edge":
+            if voice_id:
+                self.settings["edge_voice"] = voice_id
         else:
-            self.settings["offline_voice"] = self._voice_map.get(voice, "")
+            self.settings["offline_voice"] = "" if voice in ("(default)", "") else voice_id
         save_settings(self.settings)
+
+    def _on_engine_change(self, _value: str) -> None:
+        self._persist_from_widgets()
+        self._refresh_voices()
+        self._set_status(
+            "Neural Edge voices (needs internet)"
+            if self.engine_var.get() == "edge"
+            else "Offline Windows voices"
+        )
 
     def _on_rate_change(self, value: float) -> None:
         rate = int(value)
@@ -413,12 +442,15 @@ class App(ctk.CTk):
 
     def _on_lang_change(self) -> None:
         self._persist_from_widgets()
-        # Prefer a matching system voice when language changes
-        preferred = self.tts.prefer_voice_for_lang(self.lang_var.get())
+        engine = self.engine_var.get()
+        preferred = self.tts.prefer_voice_for_lang(self.lang_var.get(), engine=engine)
         if preferred:
-            self.settings["offline_voice"] = preferred
+            if engine == "edge":
+                self.settings["edge_voice"] = preferred
+            else:
+                self.settings["offline_voice"] = preferred
             save_settings(self.settings)
-            self._refresh_voices()
+        self._refresh_voices()
 
     def _on_simple_mode_toggle(self) -> None:
         self._persist_from_widgets()
@@ -467,31 +499,53 @@ class App(ctk.CTk):
     def _refresh_voices(self) -> None:
         self.voice_menu.configure(values=["Loading..."])
         self.voice_var.set("Loading...")
+        engine = self.engine_var.get()
+        lang = self.lang_var.get()
 
         def _load() -> None:
-            voice_map: dict[str, str] = {"(default)": ""}
-            labels = ["(default)"]
-            selected = "(default)"
+            voice_map: dict[str, str] = {}
+            labels: list[str] = []
+            selected = ""
             try:
-                for voice in self.tts.list_voices():
-                    label = voice["name"]
-                    if label in voice_map:
-                        label = f'{voice["name"]} [{voice["id"][-12:]}]'
-                    voice_map[label] = voice["id"]
-                    labels.append(label)
-                wanted = self.settings.get("offline_voice", "")
-                if not wanted:
-                    wanted = self.tts.prefer_voice_for_lang(self.lang_var.get())
-                if wanted:
+                if engine == "edge":
+                    voices = self.tts.list_edge_voices_sync(lang)
+                    for voice in voices:
+                        label = voice["name"]
+                        voice_map[label] = voice["id"]
+                        labels.append(label)
+                    wanted = self.settings.get("edge_voice", "")
+                    if not wanted:
+                        wanted = self.tts.prefer_voice_for_lang(lang, engine="edge")
+                    selected = next(
+                        (lbl for lbl, vid in voice_map.items() if vid == wanted),
+                        labels[0] if labels else "(default)",
+                    )
+                else:
+                    labels = ["(default)"]
+                    voice_map["(default)"] = ""
+                    for voice in self.tts.list_offline_voices():
+                        label = voice["name"]
+                        if label in voice_map:
+                            label = f'{voice["name"]} [{voice["id"][-12:]}]'
+                        voice_map[label] = voice["id"]
+                        labels.append(label)
+                    wanted = self.settings.get("offline_voice", "")
+                    if not wanted:
+                        wanted = self.tts.prefer_voice_for_lang(lang, engine="offline")
                     selected = next(
                         (lbl for lbl, vid in voice_map.items() if vid == wanted),
                         "(default)",
                     )
             except Exception as exc:  # noqa: BLE001
+                labels = ["(default)"]
+                voice_map = {"(default)": ""}
+                selected = "(default)"
                 self._queue_status(f"Could not load voices: {exc}")
 
             def _apply() -> None:
                 self._voice_map = voice_map
+                if not labels:
+                    labels = ["(default)"]
                 self.voice_menu.configure(values=labels)
                 self.voice_var.set(selected if selected in labels else labels[0])
 
@@ -651,11 +705,18 @@ class App(ctk.CTk):
             self._set_status("Nothing to read — capture text first")
             return
         self.pause_btn.configure(text="Pause")
+        engine = str(self.settings.get("engine", "edge"))
+        voice_id = (
+            str(self.settings.get("edge_voice", "en-US-JennyNeural"))
+            if engine == "edge"
+            else str(self.settings.get("offline_voice", ""))
+        )
         self.tts.speak(
             text,
+            engine=engine,
             rate=int(self.settings.get("rate", 160)),
             volume=float(self.settings.get("volume", 1.0)),
-            voice_id=str(self.settings.get("offline_voice", "")),
+            voice_id=voice_id,
             highlight=bool(self.highlight_var.get()),
             on_done=lambda: self._queue_call(lambda: self.pause_btn.configure(text="Pause")),
         )

@@ -24,7 +24,7 @@ def test_tokenize() -> None:
 def test_settings_roundtrip() -> None:
     settings = load_settings()
     assert "hotkey_region" in settings
-    assert "engine" not in DEFAULTS  # edge engine removed
+    assert settings.get("engine") in ("edge", "offline")
     settings["rate"] = 170
     save_settings(settings)
     again = load_settings()
@@ -53,14 +53,17 @@ def test_ocr_preprocess_and_recognize() -> None:
 def test_tts_voices_and_speak() -> None:
     spoken: list[str] = []
     tts = TextToSpeech(on_word=lambda _s, _e, w: spoken.append(w))
-    voices = tts.list_voices()
-    assert isinstance(voices, list)
+    offline = tts.list_offline_voices()
+    assert isinstance(offline, list)
+    edge = tts.list_edge_voices_sync("en")
+    assert edge, "Expected Edge neural voices"
+    print("ok edge voices:", len(edge))
     done = {"yes": False}
 
     def _done() -> None:
         done["yes"] = True
 
-    tts.speak("One two", rate=200, highlight=True, on_done=_done)
+    tts.speak("One two", engine="offline", rate=200, highlight=True, on_done=_done)
     import time
 
     for _ in range(80):
