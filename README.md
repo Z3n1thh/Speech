@@ -21,7 +21,9 @@ Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway
 
 - Screen **region OCR** (`Ctrl+Shift+R`)
 - **Selected text** (`Ctrl+Shift+S`)
-- **PDF text** reading
+- **PDF text** reading + **OCR for scanned/image PDFs** (page by page)
+- **Continue** / memory — resume where you stopped
+- **Profiles** (e.g. Swedish slow / English fast)
 - Neural **Edge voices** (default) + offline Windows voices
 - Voice filter for **all languages**, favorites (★), and **Preview**
 - Word highlighting, next sentence, read from cursor

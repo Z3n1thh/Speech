@@ -1,4 +1,4 @@
-"""Non-GUI smoke tests for Screen Read-Aloud v3 features."""
+"""Non-GUI smoke tests for Screen Read-Aloud v4 features."""
 
 from __future__ import annotations
 
@@ -10,8 +10,17 @@ from pypdf import PdfWriter
 from app import autostart
 from app.config import load_settings, save_settings
 from app.history import add_history, load_history
+from app.memory import clear_memory, has_memory, load_memory, save_memory
 from app.ocr import OCR_LANG_CHOICES, recognize_image
 from app.pdf_read import PdfError, extract_pdf_text
+from app.profiles import (
+    apply_profile,
+    delete_profile,
+    find_profile,
+    normalize_profiles,
+    snapshot_from_settings,
+    upsert_profile,
+)
 from app.textutil import next_sentence_after, sentence_at_or_after, split_sentences
 from app.tts import TextToSpeech, tokenize
 
@@ -32,6 +41,8 @@ def test_settings() -> None:
     assert "favorite_voices" in settings
     assert "theme" in settings
     assert "voice_filter" in settings
+    assert "profiles" in settings
+    assert "pdf_max_pages" in settings
     settings["theme"] = "dark"
     save_settings(settings)
     assert load_settings()["theme"] == "dark"
@@ -42,6 +53,32 @@ def test_history() -> None:
     items = add_history("Feature test history item", source="test")
     assert items and load_history()[0]["text"].startswith("Feature test")
     print("ok history")
+
+
+def test_memory() -> None:
+    clear_memory()
+    assert not has_memory()
+    save_memory("Hello world. Continue here.", offset=13, source="test")
+    mem = load_memory()
+    assert mem and mem["offset"] == 13
+    assert has_memory()
+    clear_memory()
+    print("ok memory")
+
+
+def test_profiles() -> None:
+    profiles = normalize_profiles([])
+    assert any(p["name"] == "Svenska långsam" for p in profiles)
+    settings = load_settings()
+    snap = snapshot_from_settings(settings, "Test profile")
+    profiles = upsert_profile(profiles, snap)
+    found = find_profile(profiles, "Test profile")
+    assert found and found["name"] == "Test profile"
+    applied = apply_profile(settings, found)
+    assert applied["active_profile"] == "Test profile"
+    profiles = delete_profile(profiles, "Test profile")
+    assert find_profile(profiles, "Test profile") is None
+    print("ok profiles")
 
 
 def test_ocr() -> None:
@@ -110,30 +147,53 @@ def test_tts_edge_preview() -> None:
     print("ok edge preview", voice)
 
 
-def test_pdf_extract(tmp_path: Path | None = None) -> None:
-    # Minimal valid-ish PDF via pypdf
+def test_pdf_extract() -> None:
     out = Path("test_sample.pdf")
     writer = PdfWriter()
     writer.add_blank_page(width=300, height=200)
-    # Blank pages have no text — expect PdfError, then create text PDF differently
     writer.write(out)
     try:
         try:
-            extract_pdf_text(out)
-            raise AssertionError("blank pdf should fail")
+            extract_pdf_text(out, force_ocr=False)
+            # Blank page may OCR to empty and raise, or succeed with notes — either ok if handled
         except PdfError:
-            print("ok pdf blank rejected")
+            print("ok pdf blank rejected/ocr-empty")
+        else:
+            print("ok pdf blank handled")
     finally:
         if out.exists():
             out.unlink()
 
-    # Create a simple text PDF with reportlab-free approach: use pypdf page merge is hard.
-    # Instead verify PdfError on missing file.
     try:
         extract_pdf_text("does_not_exist.pdf")
         raise AssertionError("missing file should fail")
     except PdfError:
         print("ok pdf missing rejected")
+
+
+def test_pdf_ocr_image_page() -> None:
+    """Create a one-page PDF from an image and OCR it."""
+    import pymupdf
+
+    img = Image.new("RGB", (800, 200), "white")
+    ImageDraw.Draw(img).text((40, 70), "Scanned PDF hello world", fill="black")
+    png = Path("test_scan_page.png")
+    pdf = Path("test_scan.pdf")
+    img.save(png)
+    try:
+        doc = pymupdf.open()
+        page = doc.new_page(width=800, height=200)
+        page.insert_image(page.rect, filename=str(png))
+        doc.save(pdf)
+        doc.close()
+
+        text = extract_pdf_text(pdf, max_pages=1, ocr_lang="en", force_ocr=True)
+        assert "Hello" in text or "hello" in text.lower() or "world" in text.lower() or "PDF" in text or "Scanned" in text
+        print("ok pdf ocr:", repr(text[:120]))
+    finally:
+        for p in (png, pdf):
+            if p.exists():
+                p.unlink()
 
 
 def test_autostart() -> None:
@@ -159,11 +219,14 @@ if __name__ == "__main__":
     test_tokenize_and_sentences()
     test_settings()
     test_history()
+    test_memory()
+    test_profiles()
     test_ocr()
     test_edge_all_voices()
     test_tts_offline()
     test_tts_edge_preview()
     test_pdf_extract()
+    test_pdf_ocr_image_page()
     test_autostart()
     test_ui_import()
     print("ALL TESTS PASSED")

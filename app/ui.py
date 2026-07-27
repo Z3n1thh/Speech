@@ -12,8 +12,16 @@ from app import autostart
 from app.config import load_settings, save_settings
 from app.history import add_history, load_history
 from app.hotkey import HotkeyManager
+from app.memory import load_memory, save_memory
 from app.ocr import OCR_LANG_CHOICES, OcrError, recognize_image
 from app.pdf_read import PdfError, extract_pdf_text
+from app.profiles import (
+    apply_profile,
+    delete_profile,
+    find_profile,
+    snapshot_from_settings,
+    upsert_profile,
+)
 from app.region import select_region
 from app.selection import get_selected_text
 from app.textutil import next_sentence_after, sentence_at_or_after
@@ -38,11 +46,14 @@ class App(ctk.CTk):
         self._history = load_history()
         self._voice_map: dict[str, str] = {}
         self._sentence_cursor = 0
+        self._current_source = ""
+        self._current_path = ""
 
         self._build_ui()
         self._apply_settings_to_widgets()
         self._refresh_voices()
         self._refresh_history_menu()
+        self._refresh_profiles_menu()
         self._register_hotkeys()
         self._apply_simple_mode()
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
@@ -74,6 +85,17 @@ class App(ctk.CTk):
         self._set_status("Running in tray — use hotkeys or tray menu")
 
     def quit_app(self) -> None:
+        text = self.get_preview_text()
+        if text.strip():
+            try:
+                save_memory(
+                    text,
+                    self._sentence_cursor,
+                    source=self._current_source,
+                    path=self._current_path,
+                )
+            except Exception:
+                pass
         self._persist_from_widgets()
         try:
             self.hotkeys.unregister()
@@ -98,7 +120,7 @@ class App(ctk.CTk):
         ).pack(anchor="w")
         ctk.CTkLabel(
             header,
-            text="Region OCR · selection · PDF — then hear it aloud.",
+            text="Region OCR · selection · PDF (incl. scanned) — then hear it aloud.",
             font=ctk.CTkFont(family="Segoe UI", size=13),
         ).pack(anchor="w", pady=(2, 0))
 
@@ -125,6 +147,11 @@ class App(ctk.CTk):
             command=self.read_text, fg_color="#2f6b4f", hover_color="#24553e",
         )
         self.read_btn.pack(side="left", padx=(8, 0))
+        self.continue_btn = ctk.CTkButton(
+            self.actions, text="Continue", height=46, width=100,
+            command=self.continue_reading, fg_color="#2f6b4f", hover_color="#24553e",
+        )
+        self.continue_btn.pack(side="left", padx=(8, 0))
         self.from_cursor_btn = ctk.CTkButton(
             self.actions, text="From cursor", height=46, width=110,
             command=self.read_from_cursor, fg_color="#2f6b4f", hover_color="#24553e",
@@ -142,7 +169,7 @@ class App(ctk.CTk):
         self.pause_btn.pack(side="left", padx=(8, 0))
         self.stop_btn = ctk.CTkButton(
             self.actions, text="Stop", height=46, width=80,
-            command=lambda: self.tts.stop(), fg_color="#8b3a3a", hover_color="#6e2e2e",
+            command=self._stop_and_remember, fg_color="#8b3a3a", hover_color="#6e2e2e",
         )
         self.stop_btn.pack(side="left", padx=(8, 0))
 
@@ -262,16 +289,35 @@ class App(ctk.CTk):
         ).pack(side="left", padx=(12, 0))
 
         row5 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row5.pack(fill="x", padx=12, pady=(4, 10))
-        ctk.CTkLabel(row5, text="History").pack(side="left")
+        row5.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(row5, text="Profile").pack(side="left")
+        self.profile_var = ctk.StringVar(value="(none)")
+        self.profile_menu = ctk.CTkOptionMenu(
+            row5, values=["(none)"], variable=self.profile_var, width=200,
+            command=self._on_profile_pick,
+        )
+        self.profile_menu.pack(side="left", padx=(6, 6))
+        ctk.CTkButton(row5, text="Save profile", width=110, command=self.save_current_profile).pack(
+            side="left"
+        )
+        ctk.CTkButton(row5, text="Delete", width=70, command=self.delete_current_profile).pack(
+            side="left", padx=(6, 0)
+        )
+
+        row6 = ctk.CTkFrame(self.controls, fg_color="transparent")
+        row6.pack(fill="x", padx=12, pady=(4, 10))
+        ctk.CTkLabel(row6, text="History").pack(side="left")
         self.history_var = ctk.StringVar(value="(empty)")
         self.history_menu = ctk.CTkOptionMenu(
-            row5, values=["(empty)"], variable=self.history_var, width=300,
+            row6, values=["(empty)"], variable=self.history_var, width=300,
             command=self._on_history_pick,
         )
         self.history_menu.pack(side="left", padx=(6, 8))
-        ctk.CTkButton(row5, text="Apply hotkeys", width=120, command=self._apply_hotkeys).pack(
+        ctk.CTkButton(row6, text="Apply hotkeys", width=120, command=self._apply_hotkeys).pack(
             side="left"
+        )
+        ctk.CTkButton(row6, text="Remember pos", width=110, command=self.remember_position).pack(
+            side="left", padx=(8, 0)
         )
 
         self.hotkey_hint = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=12), anchor="w")
@@ -298,6 +344,8 @@ class App(ctk.CTk):
         self.lang_var.set(lang if lang in OCR_LANG_CHOICES else "en")
         theme = str(s.get("theme", "dark"))
         self.theme_var.set(theme if theme in ("dark", "light") else "dark")
+        active = str(s.get("active_profile", "") or "(none)")
+        self.profile_var.set(active)
         self._update_text_font()
         self._update_hotkey_hint()
 
@@ -344,10 +392,30 @@ class App(ctk.CTk):
                 self._raw_text.tag_add("highlight", f"1.0+{start}c", f"1.0+{end}c")
                 self._raw_text.see(f"1.0+{start}c")
                 self._sentence_cursor = start
+                self._maybe_autosave_memory(start)
             except Exception:
                 pass
 
         self._queue_call(_apply)
+
+    def _maybe_autosave_memory(self, offset: int) -> None:
+        text = self.get_preview_text()
+        if not text.strip():
+            return
+        # Throttle disk writes: every ~80 characters of progress
+        last = getattr(self, "_last_memory_offset", -9999)
+        if abs(offset - last) < 80:
+            return
+        self._last_memory_offset = offset
+        try:
+            save_memory(
+                text,
+                offset,
+                source=self._current_source,
+                path=self._current_path,
+            )
+        except Exception:
+            pass
 
     # ---- settings ----
     def _selected_voice_id(self) -> str:
@@ -370,6 +438,7 @@ class App(ctk.CTk):
         self.settings["autostart"] = bool(self.autostart_var.get())
         self.settings["ocr_lang"] = self.lang_var.get()
         self.settings["theme"] = self.theme_var.get()
+        self.settings["active_profile"] = self.profile_var.get()
         voice_id = self._selected_voice_id()
         if self.settings["engine"] == "edge":
             if voice_id:
@@ -590,6 +659,59 @@ class App(ctk.CTk):
 
         threading.Thread(target=_load, daemon=True).start()
 
+    def _refresh_profiles_menu(self) -> None:
+        profiles = self.settings.get("profiles", [])
+        names = [str(p.get("name", "")) for p in profiles if p.get("name")]
+        if not names:
+            names = ["(none)"]
+        current = self.profile_var.get()
+        self.profile_menu.configure(values=names)
+        if current in names:
+            self.profile_var.set(current)
+        elif self.settings.get("active_profile") in names:
+            self.profile_var.set(str(self.settings.get("active_profile")))
+        else:
+            self.profile_var.set(names[0])
+
+    def _on_profile_pick(self, name: str) -> None:
+        profile = find_profile(self.settings.get("profiles", []), name)
+        if not profile:
+            return
+        self.settings = apply_profile(self.settings, profile)
+        save_settings(self.settings)
+        self._apply_settings_to_widgets()
+        self._refresh_voices()
+        self._set_status(f"Profile: {name}")
+
+    def save_current_profile(self) -> None:
+        self._persist_from_widgets()
+        name = self.profile_var.get().strip()
+        if not name or name == "(none)":
+            name = "Custom"
+        # Ask for a name via simple dialog
+        dialog = ctk.CTkInputDialog(text="Profile name:", title="Save profile")
+        typed = dialog.get_input()
+        if typed is not None and typed.strip():
+            name = typed.strip()
+        profile = snapshot_from_settings(self.settings, name)
+        self.settings["profiles"] = upsert_profile(self.settings.get("profiles", []), profile)
+        self.settings["active_profile"] = name
+        save_settings(self.settings)
+        self._refresh_profiles_menu()
+        self.profile_var.set(name)
+        self._set_status(f"Saved profile: {name}")
+
+    def delete_current_profile(self) -> None:
+        name = self.profile_var.get().strip()
+        if not name or name == "(none)":
+            self._set_status("No profile selected")
+            return
+        self.settings["profiles"] = delete_profile(self.settings.get("profiles", []), name)
+        self.settings["active_profile"] = ""
+        save_settings(self.settings)
+        self._refresh_profiles_menu()
+        self._set_status(f"Deleted profile: {name}")
+
     def _refresh_history_menu(self) -> None:
         if not self._history:
             self.history_menu.configure(values=["(empty)"])
@@ -716,43 +838,110 @@ class App(ctk.CTk):
         if not path:
             return
         self._set_status("Reading PDF...")
+        lang = self.lang_var.get() or "en"
+        max_pages = int(self.settings.get("pdf_max_pages", 40) or 40)
 
         def _run() -> None:
             try:
-                text = extract_pdf_text(path)
+                text = extract_pdf_text(
+                    path,
+                    max_pages=max_pages,
+                    ocr_lang=lang,
+                    on_progress=lambda msg: self._queue_status(msg),
+                )
             except PdfError as exc:
-                self._queue_call(lambda: self._on_text_ready(None, str(exc), "pdf"))
+                self._queue_call(lambda: self._on_text_ready(None, str(exc), "pdf", path))
                 return
             except Exception as exc:  # noqa: BLE001
-                self._queue_call(lambda: self._on_text_ready(None, f"PDF error: {exc}", "pdf"))
+                self._queue_call(
+                    lambda: self._on_text_ready(None, f"PDF error: {exc}", "pdf", path)
+                )
                 return
-            self._queue_call(lambda: self._on_text_ready(text, None, "pdf"))
+            self._queue_call(lambda: self._on_text_ready(text, None, "pdf", path))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _set_preview_text(self, text: str) -> None:
+    def _set_preview_text(self, text: str, *, cursor: int = 0) -> None:
         self.text_box.delete("1.0", "end")
         self.text_box.insert("1.0", text)
-        self._sentence_cursor = 0
+        self._sentence_cursor = max(0, min(cursor, len(text)))
         try:
             self._raw_text.tag_remove("highlight", "1.0", "end")
+            if cursor > 0:
+                self._raw_text.mark_set("insert", f"1.0+{cursor}c")
+                self._raw_text.see(f"1.0+{cursor}c")
         except Exception:
             pass
 
-    def _on_text_ready(self, text: str | None, error: str | None, source: str) -> None:
+    def _on_text_ready(
+        self,
+        text: str | None,
+        error: str | None,
+        source: str,
+        path: str = "",
+    ) -> None:
         self._busy = False
         if error:
             self._set_status(error)
             return
         assert text is not None
+        self._current_source = source
+        self._current_path = path
         self._set_preview_text(text)
         self._history = add_history(text, source=source)
         self._refresh_history_menu()
+        try:
+            save_memory(text, 0, source=source, path=path)
+        except Exception:
+            pass
         self._set_status("Text ready")
         if self.auto_speak_var.get():
             self.read_text()
             if self.quiet_mode_var.get():
                 self.after(400, self.hide_to_tray)
+
+    def remember_position(self) -> None:
+        text = self.get_preview_text()
+        if not text.strip():
+            self._set_status("Nothing to remember")
+            return
+        offset = self._cursor_index()
+        save_memory(text, offset, source=self._current_source, path=self._current_path)
+        self._set_status(f"Saved position at character {offset}")
+
+    def continue_reading(self) -> None:
+        mem = load_memory()
+        if not mem or not mem.get("text"):
+            self._set_status("No saved position — use Remember pos or Stop while reading")
+            return
+        text = str(mem["text"])
+        offset = int(mem.get("offset", 0) or 0)
+        self._current_source = str(mem.get("source", "") or "")
+        self._current_path = str(mem.get("path", "") or "")
+        self._set_preview_text(text, cursor=offset)
+        self._persist_from_widgets()
+        hit = sentence_at_or_after(text, offset)
+        if not hit:
+            self._set_status("Saved position is at the end")
+            return
+        start, _, _ = hit
+        self._set_status(f"Continuing from character {start}")
+        self._speak_range(text, start, len(text))
+
+    def _stop_and_remember(self) -> None:
+        text = self.get_preview_text()
+        if text.strip():
+            try:
+                save_memory(
+                    text,
+                    self._sentence_cursor,
+                    source=self._current_source,
+                    path=self._current_path,
+                )
+            except Exception:
+                pass
+        self.tts.stop()
+        self._set_status("Stopped — position saved (Continue to resume)")
 
     def get_preview_text(self) -> str:
         return self.text_box.get("1.0", "end-1c")
@@ -853,3 +1042,14 @@ class App(ctk.CTk):
         else:
             self.tts.pause()
             self.pause_btn.configure(text="Resume")
+            text = self.get_preview_text()
+            if text.strip():
+                try:
+                    save_memory(
+                        text,
+                        self._sentence_cursor,
+                        source=self._current_source,
+                        path=self._current_path,
+                    )
+                except Exception:
+                    pass

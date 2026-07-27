@@ -34,6 +34,8 @@ DEFAULTS: dict[str, Any] = {
     "edge_voice": "en-US-JennyNeural",
     "voice_filter": "all",  # all | en | sv | de | fr | es | ...
     "favorite_voices": [],  # [{engine, id, label}]
+    "profiles": [],  # filled with builtins on first load if empty
+    "active_profile": "",
     "auto_speak": True,
     "font_size": 18,
     "ocr_lang": _default_ocr_lang(),
@@ -42,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "quiet_mode": False,  # hide to tray after auto-speak starts
     "word_highlight": True,
     "theme": "dark",  # dark | light
+    "pdf_max_pages": 40,
 }
 
 
@@ -56,9 +59,12 @@ def config_path() -> Path:
 
 
 def load_settings() -> dict[str, Any]:
+    from app.profiles import normalize_profiles
+
     path = config_path()
     settings = deepcopy(DEFAULTS)
     if not path.exists():
+        settings["profiles"] = normalize_profiles([])
         return settings
     try:
         with path.open("r", encoding="utf-8") as fh:
@@ -72,13 +78,17 @@ def load_settings() -> dict[str, Any]:
             favs = settings.get("favorite_voices", [])
             if not isinstance(favs, list):
                 settings["favorite_voices"] = []
+            settings["profiles"] = normalize_profiles(settings.get("profiles"))
     except (OSError, json.JSONDecodeError):
-        pass
+        settings["profiles"] = normalize_profiles([])
     return settings
 
 
 def save_settings(settings: dict[str, Any]) -> None:
+    from app.profiles import normalize_profiles
+
     path = config_path()
     payload = {key: settings.get(key, DEFAULTS[key]) for key in DEFAULTS}
+    payload["profiles"] = normalize_profiles(payload.get("profiles"))
     with path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
