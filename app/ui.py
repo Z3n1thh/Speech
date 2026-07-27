@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from tkinter import filedialog
+from typing import Any, Callable
 
 import customtkinter as ctk
 
@@ -11,34 +12,32 @@ from app import autostart
 from app.config import load_settings, save_settings
 from app.history import add_history, load_history
 from app.hotkey import HotkeyManager
-from app.ocr import OcrError, recognize_image
+from app.ocr import OCR_LANG_CHOICES, OcrError, recognize_image
+from app.pdf_read import PdfError, extract_pdf_text
 from app.region import select_region
 from app.selection import get_selected_text
+from app.textutil import next_sentence_after, sentence_at_or_after
 from app.tts import TextToSpeech
-
-
-ctk.set_appearance_mode("light")
-ctk.set_default_color_theme("blue")
 
 
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Screen Read-Aloud")
-        self.geometry("760x700")
-        self.minsize(580, 560)
+        self.geometry("820x760")
+        self.minsize(620, 600)
 
         self.settings = load_settings()
-        self.tts = TextToSpeech(
-            on_status=self._queue_status,
-            on_word=self._on_word,
-        )
+        self._apply_theme(self.settings.get("theme", "dark"))
+
+        self.tts = TextToSpeech(on_status=self._queue_status, on_word=self._on_word)
         self.hotkeys = HotkeyManager()
         self._busy = False
         self._on_quit_callbacks: list[Callable[[], None]] = []
         self._ui_queue: list[Callable[[], None]] = []
         self._history = load_history()
-        self._voice_map: dict[str, str] = {"(default)": ""}
+        self._voice_map: dict[str, str] = {}
+        self._sentence_cursor = 0
 
         self._build_ui()
         self._apply_settings_to_widgets()
@@ -47,9 +46,14 @@ class App(ctk.CTk):
         self._register_hotkeys()
         self._apply_simple_mode()
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
-        self.after(100, self._drain_ui_queue)
+        self.after(80, self._drain_ui_queue)
 
-    # ---- public API for tray ----
+    def _apply_theme(self, theme: str) -> None:
+        mode = "dark" if theme == "dark" else "light"
+        ctk.set_appearance_mode(mode)
+        ctk.set_default_color_theme("blue")
+
+    # ---- tray API ----
     def add_quit_callback(self, callback: Callable[[], None]) -> None:
         self._on_quit_callbacks.append(callback)
 
@@ -85,261 +89,215 @@ class App(ctk.CTk):
 
     # ---- UI ----
     def _build_ui(self) -> None:
-        self.configure(fg_color=("#f3f1eb", "#1e1e1e"))
-
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(18, 8))
+        header.pack(fill="x", padx=20, pady=(16, 6))
         ctk.CTkLabel(
             header,
             text="Screen Read-Aloud",
             font=ctk.CTkFont(family="Segoe UI Semibold", size=26),
-            text_color=("#1b3a4b", "#e8f1f5"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             header,
-            text="Mark text on screen (or select it), then hear it read aloud.",
-            font=ctk.CTkFont(family="Segoe UI", size=14),
-            text_color=("#4a5560", "#b0b8c0"),
-        ).pack(anchor="w", pady=(4, 0))
+            text="Region OCR · selection · PDF — then hear it aloud.",
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+        ).pack(anchor="w", pady=(2, 0))
 
         self.actions = ctk.CTkFrame(self, fg_color="transparent")
-        self.actions.pack(fill="x", padx=20, pady=(4, 8))
+        self.actions.pack(fill="x", padx=20, pady=(4, 6))
 
         self.select_btn = ctk.CTkButton(
-            self.actions,
-            text="Select region",
-            height=48,
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
-            command=self.start_region_capture,
-            fg_color="#216e96",
-            hover_color="#1a5878",
+            self.actions, text="Select region", height=46, width=130,
+            command=self.start_region_capture, fg_color="#216e96", hover_color="#1a5878",
         )
         self.select_btn.pack(side="left")
-
         self.selection_btn = ctk.CTkButton(
-            self.actions,
-            text="Read selection",
-            height=48,
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
-            command=self.start_selection_capture,
-            fg_color="#3a6e8b",
-            hover_color="#2f5a72",
+            self.actions, text="Read selection", height=46, width=130,
+            command=self.start_selection_capture, fg_color="#3a6e8b", hover_color="#2f5a72",
         )
-        self.selection_btn.pack(side="left", padx=(10, 0))
-
+        self.selection_btn.pack(side="left", padx=(8, 0))
+        self.pdf_btn = ctk.CTkButton(
+            self.actions, text="Open PDF", height=46, width=100,
+            command=self.open_pdf, fg_color="#5a4e8c", hover_color="#463c6e",
+        )
+        self.pdf_btn.pack(side="left", padx=(8, 0))
         self.read_btn = ctk.CTkButton(
-            self.actions,
-            text="Read",
-            height=48,
-            width=110,
-            font=ctk.CTkFont(family="Segoe UI", size=15),
-            command=self.read_text,
-            fg_color="#2f6b4f",
-            hover_color="#24553e",
+            self.actions, text="Read", height=46, width=90,
+            command=self.read_text, fg_color="#2f6b4f", hover_color="#24553e",
         )
-        self.read_btn.pack(side="left", padx=(10, 0))
-
+        self.read_btn.pack(side="left", padx=(8, 0))
+        self.from_cursor_btn = ctk.CTkButton(
+            self.actions, text="From cursor", height=46, width=110,
+            command=self.read_from_cursor, fg_color="#2f6b4f", hover_color="#24553e",
+        )
+        self.from_cursor_btn.pack(side="left", padx=(8, 0))
+        self.next_sent_btn = ctk.CTkButton(
+            self.actions, text="Next sentence", height=46, width=120,
+            command=self.read_next_sentence, fg_color="#4a6b3a", hover_color="#3a552e",
+        )
+        self.next_sent_btn.pack(side="left", padx=(8, 0))
         self.pause_btn = ctk.CTkButton(
-            self.actions,
-            text="Pause",
-            height=48,
-            width=110,
-            font=ctk.CTkFont(family="Segoe UI", size=15),
-            command=self._toggle_pause,
-            fg_color="#6b6b6b",
-            hover_color="#555555",
+            self.actions, text="Pause", height=46, width=90,
+            command=self._toggle_pause, fg_color="#6b6b6b", hover_color="#555555",
         )
-        self.pause_btn.pack(side="left", padx=(10, 0))
-
+        self.pause_btn.pack(side="left", padx=(8, 0))
         self.stop_btn = ctk.CTkButton(
-            self.actions,
-            text="Stop",
-            height=48,
-            width=110,
-            font=ctk.CTkFont(family="Segoe UI", size=15),
-            command=lambda: self.tts.stop(),
-            fg_color="#8b3a3a",
-            hover_color="#6e2e2e",
+            self.actions, text="Stop", height=46, width=80,
+            command=lambda: self.tts.stop(), fg_color="#8b3a3a", hover_color="#6e2e2e",
         )
-        self.stop_btn.pack(side="left", padx=(10, 0))
+        self.stop_btn.pack(side="left", padx=(8, 0))
 
-        preview_frame = ctk.CTkFrame(self, fg_color="transparent")
-        preview_frame.pack(fill="both", expand=True, padx=20, pady=(4, 8))
-        ctk.CTkLabel(
-            preview_frame,
-            text="Text preview (editable) — current word is highlighted",
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            text_color=("#4a5560", "#b0b8c0"),
-        ).pack(anchor="w")
-
+        preview = ctk.CTkFrame(self, fg_color="transparent")
+        preview.pack(fill="both", expand=True, padx=20, pady=(2, 6))
+        ctk.CTkLabel(preview, text="Text preview (editable)", font=ctk.CTkFont(size=13)).pack(
+            anchor="w"
+        )
         self.text_box = ctk.CTkTextbox(
-            preview_frame,
+            preview,
             font=ctk.CTkFont(family="Consolas", size=int(self.settings["font_size"])),
             wrap="word",
-            fg_color=("#fffdf8", "#2a2a2a"),
-            text_color=("#1a1a1a", "#f0f0f0"),
-            border_width=1,
-            border_color=("#cfc8ba", "#444444"),
         )
-        self.text_box.pack(fill="both", expand=True, pady=(6, 0))
-        # Underlying tk Text for highlight tags
+        self.text_box.pack(fill="both", expand=True, pady=(4, 0))
         self._raw_text = self.text_box._textbox  # noqa: SLF001
         self._raw_text.tag_configure("highlight", background="#ffe08a", foreground="#111111")
 
-        self.controls = ctk.CTkFrame(self, fg_color=("#ebe6dc", "#2a2a2a"), corner_radius=10)
-        self.controls.pack(fill="x", padx=20, pady=(4, 8))
+        self.controls = ctk.CTkFrame(self, corner_radius=10)
+        self.controls.pack(fill="x", padx=20, pady=(2, 6))
 
         row1 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row1.pack(fill="x", padx=12, pady=(12, 6))
+        row1.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(row1, text="Engine").pack(side="left")
+        self.engine_var = ctk.StringVar(value="edge")
+        ctk.CTkOptionMenu(
+            row1, values=["edge", "offline"], variable=self.engine_var,
+            width=100, command=self._on_engine_change,
+        ).pack(side="left", padx=(6, 10))
 
-        ctk.CTkLabel(row1, text="Engine", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.engine_var = ctk.StringVar(value=str(self.settings.get("engine", "edge")))
-        self.engine_menu = ctk.CTkOptionMenu(
-            row1,
-            values=["edge", "offline"],
-            variable=self.engine_var,
-            width=110,
-            command=self._on_engine_change,
+        ctk.CTkLabel(row1, text="Voice lang").pack(side="left")
+        self.voice_filter_var = ctk.StringVar(value="all")
+        self.voice_filter_menu = ctk.CTkOptionMenu(
+            row1, values=["all", "en", "sv", "de", "fr", "es"],
+            variable=self.voice_filter_var, width=80,
+            command=lambda _v: self._on_voice_filter_change(),
         )
-        self.engine_menu.pack(side="left", padx=(8, 12))
+        self.voice_filter_menu.pack(side="left", padx=(6, 10))
 
-        ctk.CTkLabel(row1, text="Voice", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.voice_var = ctk.StringVar(value="(default)")
-        self.voice_menu = ctk.CTkOptionMenu(
-            row1,
-            values=["(default)"],
-            variable=self.voice_var,
-            width=280,
-            command=lambda _v: self._persist_from_widgets(),
-        )
-        self.voice_menu.pack(side="left", padx=(8, 12))
-
-        ctk.CTkLabel(row1, text="OCR lang", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.lang_var = ctk.StringVar(value=str(self.settings.get("ocr_lang", "en")))
-        self.lang_menu = ctk.CTkOptionMenu(
-            row1,
-            values=["en", "sv"],
-            variable=self.lang_var,
-            width=80,
+        ctk.CTkLabel(row1, text="OCR").pack(side="left")
+        self.lang_var = ctk.StringVar(value="en")
+        ctk.CTkOptionMenu(
+            row1, values=OCR_LANG_CHOICES, variable=self.lang_var, width=70,
             command=lambda _v: self._on_lang_change(),
-        )
-        self.lang_menu.pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=(6, 10))
+
+        ctk.CTkLabel(row1, text="Theme").pack(side="left")
+        self.theme_var = ctk.StringVar(value="dark")
+        ctk.CTkOptionMenu(
+            row1, values=["dark", "light"], variable=self.theme_var, width=90,
+            command=self._on_theme_change,
+        ).pack(side="left", padx=(6, 0))
 
         row2 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row2.pack(fill="x", padx=12, pady=6)
-        ctk.CTkLabel(row2, text="Rate", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.rate_slider = ctk.CTkSlider(
-            row2, from_=80, to=260, number_of_steps=36, command=self._on_rate_change, width=180
+        row2.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(row2, text="Voice").pack(side="left")
+        self.voice_var = ctk.StringVar(value="")
+        self.voice_menu = ctk.CTkComboBox(
+            row2, values=["Loading..."], variable=self.voice_var, width=420,
+            command=lambda _v: self._persist_from_widgets(),
         )
-        self.rate_slider.pack(side="left", padx=(8, 8))
-        self.rate_label = ctk.CTkLabel(row2, text="160", width=40)
-        self.rate_label.pack(side="left")
-        ctk.CTkLabel(row2, text="Volume", font=ctk.CTkFont(size=13)).pack(side="left", padx=(16, 0))
-        self.volume_slider = ctk.CTkSlider(
-            row2, from_=0, to=1, number_of_steps=20, command=self._on_volume_change, width=140
+        self.voice_menu.pack(side="left", padx=(6, 8))
+        ctk.CTkButton(row2, text="Preview", width=80, command=self.preview_voice).pack(side="left")
+        ctk.CTkButton(row2, text="★ Fav", width=70, command=self.toggle_favorite).pack(
+            side="left", padx=(6, 0)
         )
-        self.volume_slider.pack(side="left", padx=(8, 8))
-        self.volume_label = ctk.CTkLabel(row2, text="100%", width=48)
-        self.volume_label.pack(side="left")
 
         row3 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row3.pack(fill="x", padx=12, pady=6)
-        ctk.CTkLabel(row3, text="Text size", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.font_slider = ctk.CTkSlider(
-            row3, from_=14, to=36, number_of_steps=22, command=self._on_font_change, width=140
+        row3.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(row3, text="Rate").pack(side="left")
+        self.rate_slider = ctk.CTkSlider(
+            row3, from_=80, to=260, number_of_steps=36, command=self._on_rate_change, width=170
         )
-        self.font_slider.pack(side="left", padx=(8, 8))
-        self.font_label = ctk.CTkLabel(row3, text="18", width=36)
+        self.rate_slider.pack(side="left", padx=(6, 6))
+        self.rate_label = ctk.CTkLabel(row3, text="160", width=36)
+        self.rate_label.pack(side="left")
+        ctk.CTkLabel(row3, text="Vol").pack(side="left", padx=(12, 0))
+        self.volume_slider = ctk.CTkSlider(
+            row3, from_=0, to=1, number_of_steps=20, command=self._on_volume_change, width=120
+        )
+        self.volume_slider.pack(side="left", padx=(6, 6))
+        self.volume_label = ctk.CTkLabel(row3, text="100%", width=44)
+        self.volume_label.pack(side="left")
+        ctk.CTkLabel(row3, text="Size").pack(side="left", padx=(12, 0))
+        self.font_slider = ctk.CTkSlider(
+            row3, from_=14, to=36, number_of_steps=22, command=self._on_font_change, width=110
+        )
+        self.font_slider.pack(side="left", padx=(6, 6))
+        self.font_label = ctk.CTkLabel(row3, text="18", width=30)
         self.font_label.pack(side="left")
 
-        self.auto_speak_var = ctk.BooleanVar(value=bool(self.settings["auto_speak"]))
+        row4 = ctk.CTkFrame(self.controls, fg_color="transparent")
+        row4.pack(fill="x", padx=12, pady=4)
+        self.auto_speak_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
-            row3,
-            text="Auto-speak",
-            variable=self.auto_speak_var,
+            row4, text="Auto-speak", variable=self.auto_speak_var,
             command=self._persist_from_widgets,
-        ).pack(side="left", padx=(16, 0))
-
-        self.highlight_var = ctk.BooleanVar(value=bool(self.settings.get("word_highlight", True)))
+        ).pack(side="left")
+        self.highlight_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
-            row3,
-            text="Highlight words",
-            variable=self.highlight_var,
+            row4, text="Highlight", variable=self.highlight_var,
             command=self._persist_from_widgets,
         ).pack(side="left", padx=(12, 0))
-
-        row4 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row4.pack(fill="x", padx=12, pady=6)
-        self.simple_mode_var = ctk.BooleanVar(value=bool(self.settings.get("simple_mode", False)))
+        self.simple_mode_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            row4,
-            text="Simple mode (big buttons)",
-            variable=self.simple_mode_var,
+            row4, text="Simple mode", variable=self.simple_mode_var,
             command=self._on_simple_mode_toggle,
-        ).pack(side="left")
-
-        self.autostart_var = ctk.BooleanVar(
-            value=bool(self.settings.get("autostart", False)) or autostart.is_enabled()
-        )
+        ).pack(side="left", padx=(12, 0))
+        self.quiet_mode_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            row4,
-            text="Start with Windows",
-            variable=self.autostart_var,
+            row4, text="Quiet (tray after speak)", variable=self.quiet_mode_var,
+            command=self._persist_from_widgets,
+        ).pack(side="left", padx=(12, 0))
+        self.autostart_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            row4, text="Start with Windows", variable=self.autostart_var,
             command=self._on_autostart_toggle,
-        ).pack(side="left", padx=(16, 0))
+        ).pack(side="left", padx=(12, 0))
 
         row5 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row5.pack(fill="x", padx=12, pady=(6, 12))
-        ctk.CTkLabel(row5, text="History", font=ctk.CTkFont(size=13)).pack(side="left")
+        row5.pack(fill="x", padx=12, pady=(4, 10))
+        ctk.CTkLabel(row5, text="History").pack(side="left")
         self.history_var = ctk.StringVar(value="(empty)")
         self.history_menu = ctk.CTkOptionMenu(
-            row5,
-            values=["(empty)"],
-            variable=self.history_var,
-            width=320,
+            row5, values=["(empty)"], variable=self.history_var, width=300,
             command=self._on_history_pick,
         )
-        self.history_menu.pack(side="left", padx=(8, 8))
+        self.history_menu.pack(side="left", padx=(6, 8))
         ctk.CTkButton(row5, text="Apply hotkeys", width=120, command=self._apply_hotkeys).pack(
             side="left"
         )
 
-        self.hotkey_hint = ctk.CTkLabel(
-            self,
-            text="",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color=("#5a6570", "#a8b2ba"),
-            anchor="w",
-            justify="left",
-        )
+        self.hotkey_hint = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=12), anchor="w")
         self.hotkey_hint.pack(fill="x", padx=22, pady=(0, 2))
-
-        self.status_label = ctk.CTkLabel(
-            self,
-            text="Ready",
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            text_color=("#2f4f5f", "#c5d4dc"),
-            anchor="w",
-        )
-        self.status_label.pack(fill="x", padx=22, pady=(0, 14))
+        self.status_label = ctk.CTkLabel(self, text="Ready", font=ctk.CTkFont(size=13), anchor="w")
+        self.status_label.pack(fill="x", padx=22, pady=(0, 12))
 
     def _apply_settings_to_widgets(self) -> None:
-        engine = str(self.settings.get("engine", "edge"))
-        self.engine_var.set(engine if engine in ("edge", "offline") else "edge")
-        self.rate_slider.set(float(self.settings.get("rate", 160)))
+        s = self.settings
+        self.engine_var.set(s.get("engine", "edge") if s.get("engine") in ("edge", "offline") else "edge")
+        self.voice_filter_var.set(str(s.get("voice_filter", "all")))
+        self.rate_slider.set(float(s.get("rate", 160)))
         self.rate_label.configure(text=str(int(self.rate_slider.get())))
-        self.volume_slider.set(float(self.settings.get("volume", 1.0)))
+        self.volume_slider.set(float(s.get("volume", 1.0)))
         self.volume_label.configure(text=f"{int(self.volume_slider.get() * 100)}%")
-        self.font_slider.set(float(self.settings.get("font_size", 18)))
+        self.font_slider.set(float(s.get("font_size", 18)))
         self.font_label.configure(text=str(int(self.font_slider.get())))
-        self.auto_speak_var.set(bool(self.settings.get("auto_speak", True)))
-        self.highlight_var.set(bool(self.settings.get("word_highlight", True)))
-        self.simple_mode_var.set(bool(self.settings.get("simple_mode", False)))
-        lang = str(self.settings.get("ocr_lang", "en"))
-        self.lang_var.set(lang if lang in ("en", "sv") else "en")
-        # Prefer Swedish neural voice when OCR lang is Swedish and none saved
-        if self.lang_var.get() == "sv" and self.settings.get("edge_voice", "").startswith("en-"):
-            self.settings["edge_voice"] = "sv-SE-SofieNeural"
+        self.auto_speak_var.set(bool(s.get("auto_speak", True)))
+        self.highlight_var.set(bool(s.get("word_highlight", True)))
+        self.simple_mode_var.set(bool(s.get("simple_mode", False)))
+        self.quiet_mode_var.set(bool(s.get("quiet_mode", False)))
+        self.autostart_var.set(bool(s.get("autostart", False)) or autostart.is_enabled())
+        lang = str(s.get("ocr_lang", "en"))
+        self.lang_var.set(lang if lang in OCR_LANG_CHOICES else "en")
+        theme = str(s.get("theme", "dark"))
+        self.theme_var.set(theme if theme in ("dark", "light") else "dark")
         self._update_text_font()
         self._update_hotkey_hint()
 
@@ -352,7 +310,7 @@ class App(ctk.CTk):
             )
         )
 
-    # ---- queue / highlight ----
+    # ---- queue ----
     def _queue_status(self, message: str) -> None:
         self._ui_queue.append(lambda m=message: self._set_status(m))
 
@@ -383,48 +341,59 @@ class App(ctk.CTk):
         def _apply() -> None:
             try:
                 self._raw_text.tag_remove("highlight", "1.0", "end")
-                start_idx = f"1.0+{start}c"
-                end_idx = f"1.0+{end}c"
-                self._raw_text.tag_add("highlight", start_idx, end_idx)
-                self._raw_text.see(start_idx)
+                self._raw_text.tag_add("highlight", f"1.0+{start}c", f"1.0+{end}c")
+                self._raw_text.see(f"1.0+{start}c")
+                self._sentence_cursor = start
             except Exception:
                 pass
 
         self._queue_call(_apply)
 
     # ---- settings ----
+    def _selected_voice_id(self) -> str:
+        label = self.voice_var.get()
+        # strip favorite star prefix
+        if label.startswith("★ "):
+            label = label[2:]
+        return self._voice_map.get(label, "") or self._voice_map.get(self.voice_var.get(), "")
+
     def _persist_from_widgets(self) -> None:
         self.settings["engine"] = self.engine_var.get()
+        self.settings["voice_filter"] = self.voice_filter_var.get()
         self.settings["rate"] = int(self.rate_slider.get())
         self.settings["volume"] = float(self.volume_slider.get())
         self.settings["font_size"] = int(self.font_slider.get())
         self.settings["auto_speak"] = bool(self.auto_speak_var.get())
         self.settings["word_highlight"] = bool(self.highlight_var.get())
         self.settings["simple_mode"] = bool(self.simple_mode_var.get())
+        self.settings["quiet_mode"] = bool(self.quiet_mode_var.get())
         self.settings["autostart"] = bool(self.autostart_var.get())
         self.settings["ocr_lang"] = self.lang_var.get()
-        voice = self.voice_var.get()
-        voice_id = self._voice_map.get(voice, "")
+        self.settings["theme"] = self.theme_var.get()
+        voice_id = self._selected_voice_id()
         if self.settings["engine"] == "edge":
             if voice_id:
                 self.settings["edge_voice"] = voice_id
         else:
-            self.settings["offline_voice"] = "" if voice in ("(default)", "") else voice_id
+            self.settings["offline_voice"] = voice_id
         save_settings(self.settings)
 
     def _on_engine_change(self, _value: str) -> None:
         self._persist_from_widgets()
         self._refresh_voices()
-        self._set_status(
-            "Neural Edge voices (needs internet)"
-            if self.engine_var.get() == "edge"
-            else "Offline Windows voices"
-        )
+
+    def _on_voice_filter_change(self) -> None:
+        self._persist_from_widgets()
+        self._refresh_voices()
+
+    def _on_theme_change(self, value: str) -> None:
+        self._apply_theme(value)
+        self._persist_from_widgets()
+        self._set_status(f"Theme: {value}")
 
     def _on_rate_change(self, value: float) -> None:
-        rate = int(value)
-        self.rate_label.configure(text=str(rate))
-        self.tts.set_rate(rate)
+        self.rate_label.configure(text=str(int(value)))
+        self.tts.set_rate(int(value))
         self._persist_from_widgets()
 
     def _on_volume_change(self, value: float) -> None:
@@ -437,20 +406,22 @@ class App(ctk.CTk):
         self._persist_from_widgets()
 
     def _update_text_font(self) -> None:
-        size = int(self.font_slider.get())
-        self.text_box.configure(font=ctk.CTkFont(family="Consolas", size=size))
+        self.text_box.configure(
+            font=ctk.CTkFont(family="Consolas", size=int(self.font_slider.get()))
+        )
 
     def _on_lang_change(self) -> None:
         self._persist_from_widgets()
-        engine = self.engine_var.get()
-        preferred = self.tts.prefer_voice_for_lang(self.lang_var.get(), engine=engine)
-        if preferred:
-            if engine == "edge":
+        # Align voice filter with OCR language when useful
+        lang = self.lang_var.get()
+        if self.engine_var.get() == "edge" and lang:
+            self.voice_filter_var.set(lang)
+            self.settings["voice_filter"] = lang
+            preferred = self.tts.prefer_voice_for_lang(lang, engine="edge")
+            if preferred:
                 self.settings["edge_voice"] = preferred
-            else:
-                self.settings["offline_voice"] = preferred
             save_settings(self.settings)
-        self._refresh_voices()
+            self._refresh_voices()
 
     def _on_simple_mode_toggle(self) -> None:
         self._persist_from_widgets()
@@ -461,29 +432,13 @@ class App(ctk.CTk):
         if simple:
             self.controls.pack_forget()
             self.hotkey_hint.pack_forget()
-            for btn in (
-                self.select_btn,
-                self.selection_btn,
-                self.read_btn,
-                self.pause_btn,
-                self.stop_btn,
-            ):
-                btn.configure(height=64, font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"))
-            self.geometry("700x520")
+            self.geometry("780x520")
         else:
-            self.controls.pack(fill="x", padx=20, pady=(4, 8))
+            self.controls.pack(fill="x", padx=20, pady=(2, 6))
             self.hotkey_hint.pack(fill="x", padx=22, pady=(0, 2))
             self.status_label.pack_forget()
-            self.status_label.pack(fill="x", padx=22, pady=(0, 14))
-            for btn, h, size in (
-                (self.select_btn, 48, 15),
-                (self.selection_btn, 48, 15),
-                (self.read_btn, 48, 15),
-                (self.pause_btn, 48, 15),
-                (self.stop_btn, 48, 15),
-            ):
-                btn.configure(height=h, font=ctk.CTkFont(family="Segoe UI", size=size, weight="bold"))
-            self.geometry("760x700")
+            self.status_label.pack(fill="x", padx=22, pady=(0, 12))
+            self.geometry("820x760")
 
     def _on_autostart_toggle(self) -> None:
         enabled = bool(self.autostart_var.get())
@@ -496,11 +451,70 @@ class App(ctk.CTk):
             self.autostart_var.set(autostart.is_enabled())
             self._set_status(f"Autostart failed: {exc}")
 
+    def _favorite_labels(self) -> list[tuple[str, str]]:
+        """Return (display_label, voice_id) for favorites matching current engine."""
+        engine = self.engine_var.get()
+        out: list[tuple[str, str]] = []
+        for item in self.settings.get("favorite_voices", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("engine") != engine:
+                continue
+            vid = str(item.get("id", ""))
+            label = str(item.get("label", vid))
+            if vid:
+                out.append((label, vid))
+        return out
+
+    def toggle_favorite(self) -> None:
+        voice_id = self._selected_voice_id()
+        label = self.voice_var.get()
+        if label.startswith("★ "):
+            label = label[2:]
+        if not voice_id:
+            self._set_status("Pick a voice first")
+            return
+        engine = self.engine_var.get()
+        favs: list[dict[str, Any]] = list(self.settings.get("favorite_voices", []))
+        existing = next(
+            (i for i, f in enumerate(favs) if f.get("engine") == engine and f.get("id") == voice_id),
+            None,
+        )
+        if existing is not None:
+            favs.pop(existing)
+            self._set_status("Removed favorite")
+        else:
+            favs.insert(0, {"engine": engine, "id": voice_id, "label": label})
+            favs = favs[:12]
+            self._set_status("Saved favorite")
+        self.settings["favorite_voices"] = favs
+        save_settings(self.settings)
+        self._refresh_voices()
+
+    def preview_voice(self) -> None:
+        self._persist_from_widgets()
+        engine = self.engine_var.get()
+        voice_id = self._selected_voice_id()
+        sample = (
+            "Hej, det här är en förhandsgranskning av rösten."
+            if self.lang_var.get() == "sv"
+            else "Hello, this is a preview of the selected voice."
+        )
+        self._set_status("Previewing voice...")
+        self.tts.speak(
+            sample,
+            engine=engine,
+            rate=int(self.settings.get("rate", 160)),
+            volume=float(self.settings.get("volume", 1.0)),
+            voice_id=voice_id,
+            highlight=False,
+        )
+
     def _refresh_voices(self) -> None:
         self.voice_menu.configure(values=["Loading..."])
         self.voice_var.set("Loading...")
         engine = self.engine_var.get()
-        lang = self.lang_var.get()
+        filt = self.voice_filter_var.get() or "all"
 
         def _load() -> None:
             voice_map: dict[str, str] = {}
@@ -508,21 +522,46 @@ class App(ctk.CTk):
             selected = ""
             try:
                 if engine == "edge":
-                    voices = self.tts.list_edge_voices_sync(lang)
+                    # Refresh locale list occasionally
+                    locales = self.tts.list_edge_locales_sync()
+                    voices = self.tts.list_edge_voices_sync(filt)
+                    for label, vid in self._favorite_labels():
+                        starred = f"★ {label}"
+                        voice_map[starred] = vid
+                        voice_map[label] = vid
+                        labels.append(starred)
                     for voice in voices:
                         label = voice["name"]
+                        if label in voice_map:
+                            continue
                         voice_map[label] = voice["id"]
                         labels.append(label)
                     wanted = self.settings.get("edge_voice", "")
-                    if not wanted:
-                        wanted = self.tts.prefer_voice_for_lang(lang, engine="edge")
                     selected = next(
-                        (lbl for lbl, vid in voice_map.items() if vid == wanted),
-                        labels[0] if labels else "(default)",
+                        (lbl for lbl, vid in voice_map.items() if vid == wanted and not lbl.startswith("★ ")),
+                        labels[0] if labels else "",
                     )
+                    # Prefer showing starred version if favorited
+                    for lbl in labels:
+                        if lbl.startswith("★ ") and voice_map.get(lbl) == wanted:
+                            selected = lbl
+                            break
+
+                    def _apply_locales() -> None:
+                        current = list(self.voice_filter_menu.cget("values") or [])
+                        if locales and locales != current:
+                            self.voice_filter_menu.configure(values=locales)
+                            if self.voice_filter_var.get() not in locales:
+                                self.voice_filter_var.set("all")
+
+                    self._queue_call(_apply_locales)
                 else:
                     labels = ["(default)"]
                     voice_map["(default)"] = ""
+                    for label, vid in self._favorite_labels():
+                        starred = f"★ {label}"
+                        voice_map[starred] = vid
+                        labels.append(starred)
                     for voice in self.tts.list_offline_voices():
                         label = voice["name"]
                         if label in voice_map:
@@ -530,10 +569,8 @@ class App(ctk.CTk):
                         voice_map[label] = voice["id"]
                         labels.append(label)
                     wanted = self.settings.get("offline_voice", "")
-                    if not wanted:
-                        wanted = self.tts.prefer_voice_for_lang(lang, engine="offline")
                     selected = next(
-                        (lbl for lbl, vid in voice_map.items() if vid == wanted),
+                        (lbl for lbl, vid in voice_map.items() if vid == wanted and not lbl.startswith("★ ")),
                         "(default)",
                     )
             except Exception as exc:  # noqa: BLE001
@@ -600,7 +637,7 @@ class App(ctk.CTk):
         save_settings(self.settings)
         self._set_status(f"Rate: {rate}")
 
-    # ---- capture flows ----
+    # ---- capture / pdf ----
     def start_region_capture(self) -> None:
         if self._busy:
             return
@@ -622,15 +659,12 @@ class App(ctk.CTk):
                 self._show_window()
             self._set_status(f"Region select failed: {exc}")
             return
-
         if was_visible:
             self._show_window()
-
         if image is None:
             self._busy = False
             self._set_status("Selection cancelled")
             return
-
         self._set_status("Reading text (OCR)...")
         lang = self.lang_var.get() or "en"
 
@@ -674,9 +708,32 @@ class App(ctk.CTk):
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def open_pdf(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Open PDF",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self._set_status("Reading PDF...")
+
+        def _run() -> None:
+            try:
+                text = extract_pdf_text(path)
+            except PdfError as exc:
+                self._queue_call(lambda: self._on_text_ready(None, str(exc), "pdf"))
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._queue_call(lambda: self._on_text_ready(None, f"PDF error: {exc}", "pdf"))
+                return
+            self._queue_call(lambda: self._on_text_ready(text, None, "pdf"))
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _set_preview_text(self, text: str) -> None:
         self.text_box.delete("1.0", "end")
         self.text_box.insert("1.0", text)
+        self._sentence_cursor = 0
         try:
             self._raw_text.tag_remove("highlight", "1.0", "end")
         except Exception:
@@ -694,16 +751,59 @@ class App(ctk.CTk):
         self._set_status("Text ready")
         if self.auto_speak_var.get():
             self.read_text()
+            if self.quiet_mode_var.get():
+                self.after(400, self.hide_to_tray)
 
     def get_preview_text(self) -> str:
-        return self.text_box.get("1.0", "end").strip()
+        return self.text_box.get("1.0", "end-1c")
+
+    def _cursor_index(self) -> int:
+        try:
+            return len(self.text_box.get("1.0", "insert"))
+        except Exception:
+            return self._sentence_cursor
+
+    def _speak_range(self, text: str, start: int, end: int) -> None:
+        chunk = text[start:end].strip()
+        if not chunk:
+            self._set_status("Nothing to read here")
+            return
+        self._sentence_cursor = start
+        self.pause_btn.configure(text="Pause")
+        engine = str(self.settings.get("engine", "edge"))
+        voice_id = (
+            str(self.settings.get("edge_voice", "en-US-JennyNeural"))
+            if engine == "edge"
+            else str(self.settings.get("offline_voice", ""))
+        )
+
+        def _word(s: int, e: int, w: str) -> None:
+            self._on_word(start + s, start + e, w)
+
+        old = self.tts._on_word
+        self.tts._on_word = _word
+
+        def _done() -> None:
+            self.tts._on_word = old
+            self._queue_call(lambda: self.pause_btn.configure(text="Pause"))
+
+        self.tts.speak(
+            chunk,
+            engine=engine,
+            rate=int(self.settings.get("rate", 160)),
+            volume=float(self.settings.get("volume", 1.0)),
+            voice_id=voice_id,
+            highlight=bool(self.highlight_var.get()),
+            on_done=_done,
+        )
 
     def read_text(self) -> None:
         self._persist_from_widgets()
-        text = self.get_preview_text()
+        text = self.get_preview_text().strip()
         if not text:
             self._set_status("Nothing to read — capture text first")
             return
+        self._sentence_cursor = 0
         self.pause_btn.configure(text="Pause")
         engine = str(self.settings.get("engine", "edge"))
         voice_id = (
@@ -720,6 +820,31 @@ class App(ctk.CTk):
             highlight=bool(self.highlight_var.get()),
             on_done=lambda: self._queue_call(lambda: self.pause_btn.configure(text="Pause")),
         )
+
+    def read_from_cursor(self) -> None:
+        self._persist_from_widgets()
+        text = self.get_preview_text()
+        idx = self._cursor_index()
+        hit = sentence_at_or_after(text, idx)
+        if not hit:
+            self._set_status("No sentence found")
+            return
+        start, end, _ = hit
+        # Read from this sentence to the end
+        self._speak_range(text, start, len(text))
+
+    def read_next_sentence(self) -> None:
+        self._persist_from_widgets()
+        text = self.get_preview_text()
+        hit = next_sentence_after(text, self._sentence_cursor)
+        if not hit:
+            # If at start, read first sentence
+            hit = sentence_at_or_after(text, 0)
+        if not hit:
+            self._set_status("No next sentence")
+            return
+        start, end, _ = hit
+        self._speak_range(text, start, end)
 
     def _toggle_pause(self) -> None:
         if self.tts.is_paused():

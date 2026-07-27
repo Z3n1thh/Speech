@@ -70,14 +70,10 @@ class TextToSpeech:
         """Backward-compatible alias for offline voices."""
         return self.list_offline_voices()
 
-    def list_edge_voices_sync(self, lang: str = "en") -> list[dict[str, str]]:
+    def list_edge_voices_sync(self, lang: str = "all") -> list[dict[str, str]]:
         import edge_tts
 
-        lang_code = (lang or "en").lower()
-        prefixes = {
-            "sv": ("sv-", "sv_"),
-            "en": ("en-", "en_"),
-        }.get(lang_code, (f"{lang_code}-", f"{lang_code}_"))
+        lang_code = (lang or "all").lower().strip()
 
         async def _load() -> list[dict[str, str]]:
             voices = await edge_tts.list_voices()
@@ -88,21 +84,39 @@ class TextToSpeech:
                 friendly = str(voice.get("FriendlyName", ""))
                 short_l = short.lower()
                 locale_l = locale.lower()
-                if locale_l.startswith(lang_code) or short_l.startswith(f"{lang_code}-"):
-                    gender = voice.get("Gender", "")
-                    label = friendly or f"{short} ({locale}, {gender})"
-                    filtered.append({"id": short, "name": label})
-            if not filtered:
+                if lang_code in ("", "all", "*"):
+                    match = True
+                else:
+                    match = locale_l.startswith(lang_code) or short_l.startswith(
+                        f"{lang_code}-"
+                    )
+                if not match:
+                    continue
+                gender = voice.get("Gender", "")
+                label = friendly or f"{short} ({locale}, {gender})"
+                filtered.append(
+                    {
+                        "id": short,
+                        "name": label,
+                        "locale": locale,
+                        "gender": str(gender),
+                    }
+                )
+            if not filtered and lang_code not in ("", "all", "*"):
+                # Fallback: return English neural voices
                 for voice in voices:
                     short = str(voice.get("ShortName", ""))
+                    locale = str(voice.get("Locale", ""))
                     if short.lower().startswith("en-"):
                         filtered.append(
                             {
                                 "id": short,
                                 "name": str(
                                     voice.get("FriendlyName")
-                                    or f"{short} ({voice.get('Locale', '')})"
+                                    or f"{short} ({locale})"
                                 ),
+                                "locale": locale,
+                                "gender": str(voice.get("Gender", "")),
                             }
                         )
             filtered.sort(key=lambda v: (0 if "Neural" in v["id"] else 1, v["name"]))
@@ -116,30 +130,53 @@ class TextToSpeech:
                     {
                         "id": "sv-SE-SofieNeural",
                         "name": "Microsoft Sofie Online (Natural) - Swedish (Sweden)",
+                        "locale": "sv-SE",
+                        "gender": "Female",
                     },
                     {
                         "id": "sv-SE-MattiasNeural",
                         "name": "Microsoft Mattias Online (Natural) - Swedish (Sweden)",
+                        "locale": "sv-SE",
+                        "gender": "Male",
                     },
                 ]
             return [
                 {
                     "id": "en-US-JennyNeural",
                     "name": "Microsoft Jenny Online (Natural) - English (United States)",
+                    "locale": "en-US",
+                    "gender": "Female",
                 },
                 {
                     "id": "en-US-GuyNeural",
                     "name": "Microsoft Guy Online (Natural) - English (United States)",
+                    "locale": "en-US",
+                    "gender": "Male",
                 },
                 {
                     "id": "en-GB-SoniaNeural",
                     "name": "Microsoft Sonia Online (Natural) - English (United Kingdom)",
+                    "locale": "en-GB",
+                    "gender": "Female",
                 },
                 {
                     "id": "en-GB-RyanNeural",
                     "name": "Microsoft Ryan Online (Natural) - English (United Kingdom)",
+                    "locale": "en-GB",
+                    "gender": "Male",
                 },
             ]
+
+    def list_edge_locales_sync(self) -> list[str]:
+        voices = self.list_edge_voices_sync("all")
+        locales = sorted(
+            {
+                str(v.get("locale", "")).split("-")[0].lower()
+                for v in voices
+                if v.get("locale")
+            }
+        )
+        return ["all", *locales]
 
     def prefer_voice_for_lang(self, lang: str, engine: str = "offline") -> str:
         lang = (lang or "en").lower()

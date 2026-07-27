@@ -7,3 +7,4 @@ winocr>=0.0.15
 pyttsx3>=2.90
 edge-tts>=6.1.9
 pywin32>=306
+pypdf>=4.0.0

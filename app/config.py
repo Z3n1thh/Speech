@@ -27,17 +27,21 @@ DEFAULTS: dict[str, Any] = {
     "hotkey_stop": "ctrl+shift+x",
     "hotkey_faster": "ctrl+shift+up",
     "hotkey_slower": "ctrl+shift+down",
-    "engine": "edge",  # "edge" (neural, nicer) | "offline"
+    "engine": "edge",
     "rate": 160,
     "volume": 1.0,
     "offline_voice": "",
     "edge_voice": "en-US-JennyNeural",
+    "voice_filter": "all",  # all | en | sv | de | fr | es | ...
+    "favorite_voices": [],  # [{engine, id, label}]
     "auto_speak": True,
     "font_size": 18,
     "ocr_lang": _default_ocr_lang(),
     "autostart": False,
     "simple_mode": False,
+    "quiet_mode": False,  # hide to tray after auto-speak starts
     "word_highlight": True,
+    "theme": "dark",  # dark | light
 }
 
 
@@ -60,12 +64,14 @@ def load_settings() -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, dict):
-            # Migrate old single hotkey key
             if "hotkey" in data and "hotkey_region" not in data:
                 settings["hotkey_region"] = data["hotkey"]
             for key, value in data.items():
                 if key in DEFAULTS:
                     settings[key] = value
+            favs = settings.get("favorite_voices", [])
+            if not isinstance(favs, list):
+                settings["favorite_voices"] = []
     except (OSError, json.JSONDecodeError):
         pass
     return settings
@@ -75,4 +81,4 @@ def save_settings(settings: dict[str, Any]) -> None:
     path = config_path()
     payload = {key: settings.get(key, DEFAULTS[key]) for key in DEFAULTS}
     with path.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2)
+        json.dump(payload, fh, indent=2, ensure_ascii=False)

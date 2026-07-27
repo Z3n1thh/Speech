@@ -28,8 +28,9 @@ if not exist ".venv\Scripts\pyinstaller.exe" (
 if errorlevel 1 exit /b 1
 
 powershell -NoProfile -Command ^
-  "Compress-Archive -Path 'dist\ScreenReadAloud\*' -DestinationPath 'dist\ScreenReadAloud-Windows.zip' -Force"
+  "Copy-Item -Force 'Install-ScreenReadAloud.ps1' 'dist\ScreenReadAloud\Install-ScreenReadAloud.ps1'; Compress-Archive -Path 'dist\ScreenReadAloud\*' -DestinationPath 'dist\ScreenReadAloud-Windows.zip' -Force"
 
 echo.
 echo Built: dist\ScreenReadAloud\ScreenReadAloud.exe
 echo Zip:   dist\ScreenReadAloud-Windows.zip
+echo Tip:   run Install-ScreenReadAloud.ps1 inside the unzipped folder
