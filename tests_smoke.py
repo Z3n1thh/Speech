@@ -1,4 +1,4 @@
-"""Non-GUI smoke tests for Screen Read-Aloud v4 features."""
+"""Non-GUI smoke tests for Screen Read-Aloud v5 features."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from PIL import Image, ImageDraw
 from pypdf import PdfWriter
 
 from app import autostart
-from app.config import load_settings, save_settings
+from app.config import APP_VERSION, load_settings, save_settings
 from app.history import add_history, load_history
+from app.langdetect import detect_language
 from app.memory import clear_memory, has_memory, load_memory, save_memory
-from app.ocr import OCR_LANG_CHOICES, recognize_image
+from app.ocr import OCR_LANG_CHOICES, preprocess_variants, recognize_image, ui_lang_tip
 from app.pdf_read import PdfError, extract_pdf_text
 from app.profiles import (
     apply_profile,
@@ -23,6 +24,7 @@ from app.profiles import (
 )
 from app.textutil import next_sentence_after, sentence_at_or_after, split_sentences
 from app.tts import TextToSpeech, tokenize
+from app.updatecheck import is_newer
 
 
 def test_tokenize_and_sentences() -> None:
@@ -43,10 +45,35 @@ def test_settings() -> None:
     assert "voice_filter" in settings
     assert "profiles" in settings
     assert "pdf_max_pages" in settings
+    assert "auto_detect_lang" in settings
+    assert "reading_mode" in settings
+    assert APP_VERSION.startswith("5.")
     settings["theme"] = "dark"
     save_settings(settings)
     assert load_settings()["theme"] == "dark"
     print("ok settings")
+
+
+def test_langdetect() -> None:
+    assert detect_language("Hej, det här är en svensk text och jag kan läsa.") == "sv"
+    assert detect_language("Hello, this is an English paragraph about reading.") == "en"
+    print("ok langdetect")
+
+
+def test_update_version_compare() -> None:
+    assert is_newer("v5.0.1", "5.0.0")
+    assert not is_newer("v4.0.0", "5.0.0")
+    assert not is_newer("v5.0.0", "5.0.0")
+    print("ok update compare")
+
+
+def test_ocr_variants_and_tip() -> None:
+    img = Image.new("RGB", (100, 40), "white")
+    variants = preprocess_variants(img)
+    assert len(variants) >= 3
+    tip = ui_lang_tip("sv")
+    assert "sv" in tip.lower() or "OCR" in tip
+    print("ok ocr variants")
 
 
 def test_history() -> None:
@@ -126,25 +153,40 @@ def test_tts_offline() -> None:
 
 def test_tts_edge_preview() -> None:
     done = {"yes": False}
-    tts = TextToSpeech()
+    spoken: list[str] = []
+    tts = TextToSpeech(on_word=lambda s, e, w: spoken.append(w))
     voices = tts.list_edge_voices_sync("en")
     voice = voices[0]["id"]
     tts.speak(
-        "Hi",
+        "One. Two.",
         engine="edge",
         voice_id=voice,
         rate=180,
-        highlight=False,
+        highlight=True,
         on_done=lambda: done.__setitem__("yes", True),
     )
     import time
 
-    for _ in range(120):
+    for _ in range(180):
         if done["yes"]:
             break
         time.sleep(0.1)
     assert done["yes"], "Edge preview did not finish"
-    print("ok edge preview", voice)
+    assert spoken, "expected sentence highlights for Edge"
+    print("ok edge sentence highlight", voice, spoken)
+
+
+def test_mp3_export() -> None:
+    out = Path("test_export.mp3")
+    if out.exists():
+        out.unlink()
+    tts = TextToSpeech()
+    voices = tts.list_edge_voices_sync("en")
+    voice = voices[0]["id"]
+    tts.export_mp3("Hello export test.", str(out), voice_id=voice, rate=180)
+    assert out.exists() and out.stat().st_size > 500
+    out.unlink()
+    print("ok mp3 export")
 
 
 def test_pdf_extract() -> None:
@@ -218,6 +260,9 @@ def test_ui_import() -> None:
 if __name__ == "__main__":
     test_tokenize_and_sentences()
     test_settings()
+    test_langdetect()
+    test_update_version_compare()
+    test_ocr_variants_and_tip()
     test_history()
     test_memory()
     test_profiles()
@@ -225,6 +270,7 @@ if __name__ == "__main__":
     test_edge_all_voices()
     test_tts_offline()
     test_tts_edge_preview()
+    test_mp3_export()
     test_pdf_extract()
     test_pdf_ocr_image_page()
     test_autostart()

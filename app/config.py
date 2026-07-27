@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "ScreenReadAloud"
+APP_VERSION = "5.0.0"
 
 
 def _default_ocr_lang() -> str:
@@ -45,6 +46,8 @@ DEFAULTS: dict[str, Any] = {
     "word_highlight": True,
     "theme": "dark",  # dark | light
     "pdf_max_pages": 40,
+    "auto_detect_lang": True,
+    "reading_mode": False,
 }
 
 

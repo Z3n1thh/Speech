@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import threading
+import webbrowser
 from tkinter import filedialog
 from typing import Any, Callable
 
 import customtkinter as ctk
 
 from app import autostart
-from app.config import load_settings, save_settings
+from app.config import APP_VERSION, load_settings, save_settings
 from app.history import add_history, load_history
 from app.hotkey import HotkeyManager
+from app.langdetect import detect_language
 from app.memory import load_memory, save_memory
-from app.ocr import OCR_LANG_CHOICES, OcrError, recognize_image
+from app.ocr import OCR_LANG_CHOICES, OcrError, recognize_image, ui_lang_tip
 from app.pdf_read import PdfError, extract_pdf_text
 from app.profiles import (
     apply_profile,
@@ -26,12 +28,14 @@ from app.region import select_region
 from app.selection import get_selected_text
 from app.textutil import next_sentence_after, sentence_at_or_after
 from app.tts import TextToSpeech
+from app.updatecheck import UpdateError, check_latest
+from app.updatecheck import RELEASES_URL
 
 
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Screen Read-Aloud")
+        self.title(f"Screen Read-Aloud v{APP_VERSION}")
         self.geometry("820x760")
         self.minsize(620, 600)
 
@@ -48,6 +52,8 @@ class App(ctk.CTk):
         self._sentence_cursor = 0
         self._current_source = ""
         self._current_path = ""
+        self._reading_mode = bool(self.settings.get("reading_mode", False))
+        self._normal_geometry = "820x760"
 
         self._build_ui()
         self._apply_settings_to_widgets()
@@ -56,6 +62,8 @@ class App(ctk.CTk):
         self._refresh_profiles_menu()
         self._register_hotkeys()
         self._apply_simple_mode()
+        if self._reading_mode:
+            self._apply_reading_mode(True)
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.after(80, self._drain_ui_queue)
 
@@ -111,15 +119,15 @@ class App(ctk.CTk):
 
     # ---- UI ----
     def _build_ui(self) -> None:
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(16, 6))
+        self.header = ctk.CTkFrame(self, fg_color="transparent")
+        self.header.pack(fill="x", padx=20, pady=(16, 6))
         ctk.CTkLabel(
-            header,
+            self.header,
             text="Screen Read-Aloud",
             font=ctk.CTkFont(family="Segoe UI Semibold", size=26),
         ).pack(anchor="w")
         ctk.CTkLabel(
-            header,
+            self.header,
             text="Region OCR · selection · PDF (incl. scanned) — then hear it aloud.",
             font=ctk.CTkFont(family="Segoe UI", size=13),
         ).pack(anchor="w", pady=(2, 0))
@@ -172,12 +180,23 @@ class App(ctk.CTk):
             command=self._stop_and_remember, fg_color="#8b3a3a", hover_color="#6e2e2e",
         )
         self.stop_btn.pack(side="left", padx=(8, 0))
+        self.read_mode_btn = ctk.CTkButton(
+            self.actions, text="Read mode", height=46, width=100,
+            command=self.toggle_reading_mode, fg_color="#4a5a6b", hover_color="#3a4856",
+        )
+        self.read_mode_btn.pack(side="left", padx=(8, 0))
+        self.export_btn = ctk.CTkButton(
+            self.actions, text="MP3", height=46, width=70,
+            command=self.export_mp3, fg_color="#6b5a3a", hover_color="#55482e",
+        )
+        self.export_btn.pack(side="left", padx=(8, 0))
 
         preview = ctk.CTkFrame(self, fg_color="transparent")
         preview.pack(fill="both", expand=True, padx=20, pady=(2, 6))
-        ctk.CTkLabel(preview, text="Text preview (editable)", font=ctk.CTkFont(size=13)).pack(
-            anchor="w"
+        self.preview_label = ctk.CTkLabel(
+            preview, text="Text preview (editable)", font=ctk.CTkFont(size=13)
         )
+        self.preview_label.pack(anchor="w")
         self.text_box = ctk.CTkTextbox(
             preview,
             font=ctk.CTkFont(family="Consolas", size=int(self.settings["font_size"])),
@@ -186,6 +205,7 @@ class App(ctk.CTk):
         self.text_box.pack(fill="both", expand=True, pady=(4, 0))
         self._raw_text = self.text_box._textbox  # noqa: SLF001
         self._raw_text.tag_configure("highlight", background="#ffe08a", foreground="#111111")
+        self._raw_text.tag_configure("sentence", background="#cfe8ff", foreground="#111111")
 
         self.controls = ctk.CTkFrame(self, corner_radius=10)
         self.controls.pack(fill="x", padx=20, pady=(2, 6))
@@ -287,6 +307,11 @@ class App(ctk.CTk):
             row4, text="Start with Windows", variable=self.autostart_var,
             command=self._on_autostart_toggle,
         ).pack(side="left", padx=(12, 0))
+        self.auto_detect_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            row4, text="Auto language", variable=self.auto_detect_var,
+            command=self._persist_from_widgets,
+        ).pack(side="left", padx=(12, 0))
 
         row5 = ctk.CTkFrame(self.controls, fg_color="transparent")
         row5.pack(fill="x", padx=12, pady=4)
@@ -303,13 +328,16 @@ class App(ctk.CTk):
         ctk.CTkButton(row5, text="Delete", width=70, command=self.delete_current_profile).pack(
             side="left", padx=(6, 0)
         )
+        ctk.CTkButton(row5, text="Check updates", width=120, command=self.check_for_updates).pack(
+            side="left", padx=(12, 0)
+        )
 
         row6 = ctk.CTkFrame(self.controls, fg_color="transparent")
         row6.pack(fill="x", padx=12, pady=(4, 10))
         ctk.CTkLabel(row6, text="History").pack(side="left")
         self.history_var = ctk.StringVar(value="(empty)")
         self.history_menu = ctk.CTkOptionMenu(
-            row6, values=["(empty)"], variable=self.history_var, width=300,
+            row6, values=["(empty)"], variable=self.history_var, width=260,
             command=self._on_history_pick,
         )
         self.history_menu.pack(side="left", padx=(6, 8))
@@ -317,6 +345,9 @@ class App(ctk.CTk):
             side="left"
         )
         ctk.CTkButton(row6, text="Remember pos", width=110, command=self.remember_position).pack(
+            side="left", padx=(8, 0)
+        )
+        ctk.CTkButton(row6, text="OCR tip", width=80, command=self.show_ocr_tip).pack(
             side="left", padx=(8, 0)
         )
 
@@ -339,6 +370,7 @@ class App(ctk.CTk):
         self.highlight_var.set(bool(s.get("word_highlight", True)))
         self.simple_mode_var.set(bool(s.get("simple_mode", False)))
         self.quiet_mode_var.set(bool(s.get("quiet_mode", False)))
+        self.auto_detect_var.set(bool(s.get("auto_detect_lang", True)))
         self.autostart_var.set(bool(s.get("autostart", False)) or autostart.is_enabled())
         lang = str(s.get("ocr_lang", "en"))
         self.lang_var.set(lang if lang in OCR_LANG_CHOICES else "en")
@@ -389,7 +421,10 @@ class App(ctk.CTk):
         def _apply() -> None:
             try:
                 self._raw_text.tag_remove("highlight", "1.0", "end")
-                self._raw_text.tag_add("highlight", f"1.0+{start}c", f"1.0+{end}c")
+                self._raw_text.tag_remove("sentence", "1.0", "end")
+                # Edge speaks sentence-by-sentence; longer spans use sentence tag
+                tag = "sentence" if (end - start) > 24 or (" " in _word and len(_word) > 18) else "highlight"
+                self._raw_text.tag_add(tag, f"1.0+{start}c", f"1.0+{end}c")
                 self._raw_text.see(f"1.0+{start}c")
                 self._sentence_cursor = start
                 self._maybe_autosave_memory(start)
@@ -435,6 +470,8 @@ class App(ctk.CTk):
         self.settings["word_highlight"] = bool(self.highlight_var.get())
         self.settings["simple_mode"] = bool(self.simple_mode_var.get())
         self.settings["quiet_mode"] = bool(self.quiet_mode_var.get())
+        self.settings["auto_detect_lang"] = bool(self.auto_detect_var.get())
+        self.settings["reading_mode"] = bool(self._reading_mode)
         self.settings["autostart"] = bool(self.autostart_var.get())
         self.settings["ocr_lang"] = self.lang_var.get()
         self.settings["theme"] = self.theme_var.get()
@@ -497,6 +534,8 @@ class App(ctk.CTk):
         self._apply_simple_mode()
 
     def _apply_simple_mode(self) -> None:
+        if self._reading_mode:
+            return
         simple = bool(self.simple_mode_var.get())
         if simple:
             self.controls.pack_forget()
@@ -507,7 +546,165 @@ class App(ctk.CTk):
             self.hotkey_hint.pack(fill="x", padx=22, pady=(0, 2))
             self.status_label.pack_forget()
             self.status_label.pack(fill="x", padx=22, pady=(0, 12))
-            self.geometry("820x760")
+            self.geometry(self._normal_geometry)
+
+    def toggle_reading_mode(self) -> None:
+        self._apply_reading_mode(not self._reading_mode)
+
+    def _apply_reading_mode(self, enabled: bool) -> None:
+        self._reading_mode = enabled
+        self.settings["reading_mode"] = enabled
+        save_settings(self.settings)
+        if enabled:
+            try:
+                self._normal_geometry = self.geometry()
+            except Exception:
+                self._normal_geometry = "820x760"
+            self.header.pack_forget()
+            self.controls.pack_forget()
+            self.hotkey_hint.pack_forget()
+            # Keep a slim action bar: Read / Pause / Stop / Exit
+            for child in self.actions.winfo_children():
+                try:
+                    child.pack_forget()
+                except Exception:
+                    pass
+            self.read_btn.pack(side="left")
+            self.pause_btn.pack(side="left", padx=(8, 0))
+            self.stop_btn.pack(side="left", padx=(8, 0))
+            self.read_mode_btn.configure(text="Exit read")
+            self.read_mode_btn.pack(side="left", padx=(8, 0))
+            self.preview_label.configure(text="Reading mode — text + play")
+            size = max(22, int(self.font_slider.get()) + 6)
+            self.text_box.configure(font=ctk.CTkFont(family="Consolas", size=size))
+            self.attributes("-fullscreen", True)
+            self._set_status("Reading mode — Exit read to leave")
+        else:
+            try:
+                self.attributes("-fullscreen", False)
+            except Exception:
+                pass
+            self.header.pack(fill="x", padx=20, pady=(16, 6))
+            # Restore full action bar
+            for child in self.actions.winfo_children():
+                try:
+                    child.pack_forget()
+                except Exception:
+                    pass
+            self.select_btn.pack(side="left")
+            self.selection_btn.pack(side="left", padx=(8, 0))
+            self.pdf_btn.pack(side="left", padx=(8, 0))
+            self.read_btn.pack(side="left", padx=(8, 0))
+            self.continue_btn.pack(side="left", padx=(8, 0))
+            self.from_cursor_btn.pack(side="left", padx=(8, 0))
+            self.next_sent_btn.pack(side="left", padx=(8, 0))
+            self.pause_btn.pack(side="left", padx=(8, 0))
+            self.stop_btn.pack(side="left", padx=(8, 0))
+            self.read_mode_btn.configure(text="Read mode")
+            self.read_mode_btn.pack(side="left", padx=(8, 0))
+            self.export_btn.pack(side="left", padx=(8, 0))
+            self.preview_label.configure(text="Text preview (editable)")
+            self._update_text_font()
+            if not self.simple_mode_var.get():
+                self.controls.pack(fill="x", padx=20, pady=(2, 6))
+                self.hotkey_hint.pack(fill="x", padx=22, pady=(0, 2))
+            self.status_label.pack_forget()
+            self.status_label.pack(fill="x", padx=22, pady=(0, 12))
+            self.geometry(self._normal_geometry)
+            self._apply_simple_mode()
+            self._set_status("Reading mode off")
+
+    def show_ocr_tip(self) -> None:
+        tip = ui_lang_tip(self.lang_var.get() or "en")
+        self._set_status(tip)
+
+    def check_for_updates(self) -> None:
+        self._set_status("Checking for updates...")
+
+        def _run() -> None:
+            try:
+                info = check_latest()
+            except UpdateError as exc:
+                self._queue_status(str(exc))
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._queue_status(f"Update check failed: {exc}")
+                return
+
+            if info["newer"]:
+                msg = f"New version {info['tag']} available (you have v{info['local']}). Opening releases…"
+                self._queue_status(msg)
+                self._queue_call(lambda: webbrowser.open(info["url"]))
+            else:
+                self._queue_status(
+                    f"You have the latest version (v{info['local']}). Releases: {RELEASES_URL}"
+                )
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def export_mp3(self) -> None:
+        self._persist_from_widgets()
+        text = self.get_preview_text().strip()
+        if not text:
+            self._set_status("Nothing to export — capture text first")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save audiobook MP3",
+            defaultextension=".mp3",
+            filetypes=[("MP3 audio", "*.mp3"), ("All files", "*.*")],
+            initialfile="reading.mp3",
+        )
+        if not path:
+            return
+        engine = self.engine_var.get()
+        voice_id = self._selected_voice_id()
+        if engine != "edge":
+            # MP3 export uses Edge neural TTS (free) even if playback engine is offline
+            self._set_status("MP3 export uses Edge neural voice…")
+            if not voice_id or not str(voice_id).endswith("Neural"):
+                voice_id = str(self.settings.get("edge_voice") or "en-US-JennyNeural")
+
+        def _run() -> None:
+            try:
+                self.tts.export_mp3(
+                    text,
+                    path,
+                    voice_id=voice_id or str(self.settings.get("edge_voice", "")),
+                    rate=int(self.settings.get("rate", 160)),
+                    on_status=self._queue_status,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._queue_status(f"MP3 export failed: {exc}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _maybe_apply_auto_lang(self, text: str) -> None:
+        if not self.auto_detect_var.get():
+            return
+        lang = detect_language(text)
+        changed = False
+        if self.lang_var.get() != lang:
+            self.lang_var.set(lang)
+            changed = True
+        if self.engine_var.get() == "edge" and self.voice_filter_var.get() != lang:
+            self.voice_filter_var.set(lang)
+            changed = True
+        preferred = self.tts.prefer_voice_for_lang(lang, engine=self.engine_var.get())
+        if preferred:
+            if self.engine_var.get() == "edge":
+                if self.settings.get("edge_voice") != preferred:
+                    self.settings["edge_voice"] = preferred
+                    changed = True
+            else:
+                if self.settings.get("offline_voice") != preferred:
+                    self.settings["offline_voice"] = preferred
+                    changed = True
+        if changed:
+            self.settings["ocr_lang"] = lang
+            self.settings["voice_filter"] = self.voice_filter_var.get()
+            save_settings(self.settings)
+            self._refresh_voices()
+            self._set_status(f"Auto language: {lang} — voice updated")
 
     def _on_autostart_toggle(self) -> None:
         enabled = bool(self.autostart_var.get())
@@ -867,6 +1064,7 @@ class App(ctk.CTk):
         self._sentence_cursor = max(0, min(cursor, len(text)))
         try:
             self._raw_text.tag_remove("highlight", "1.0", "end")
+            self._raw_text.tag_remove("sentence", "1.0", "end")
             if cursor > 0:
                 self._raw_text.mark_set("insert", f"1.0+{cursor}c")
                 self._raw_text.see(f"1.0+{cursor}c")
@@ -882,7 +1080,11 @@ class App(ctk.CTk):
     ) -> None:
         self._busy = False
         if error:
-            self._set_status(error)
+            if source == "ocr":
+                tip = ui_lang_tip(self.lang_var.get() or "en")
+                self._set_status(f"{error}\n{tip}")
+            else:
+                self._set_status(error)
             return
         assert text is not None
         self._current_source = source
@@ -894,6 +1096,7 @@ class App(ctk.CTk):
             save_memory(text, 0, source=source, path=path)
         except Exception:
             pass
+        self._maybe_apply_auto_lang(text)
         self._set_status("Text ready")
         if self.auto_speak_var.get():
             self.read_text()

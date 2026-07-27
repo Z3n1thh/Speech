@@ -19,14 +19,18 @@ Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway
 
 ## Features
 
-- Screen **region OCR** (`Ctrl+Shift+R`)
+- Screen **region OCR** (`Ctrl+Shift+R`) with multi-try preprocessing + OCR tips
 - **Selected text** (`Ctrl+Shift+S`)
 - **PDF text** reading + **OCR for scanned/image PDFs** (page by page)
 - **Continue** / memory — resume where you stopped
 - **Profiles** (e.g. Swedish slow / English fast)
+- **Reading mode** — nearly fullscreen, text + play
+- **MP3 export** — save narration as an audiobook file
+- **Auto language** (sv/en) switches OCR + voice
+- **Sentence highlight** while speaking (including Edge neural voices)
+- **Check updates** against GitHub Releases
 - Neural **Edge voices** (default) + offline Windows voices
 - Voice filter for **all languages**, favorites (★), and **Preview**
-- Word highlighting, next sentence, read from cursor
 - Dark/light high-contrast theme
 - Simple mode, quiet mode (tray after speak), autostart, history
 

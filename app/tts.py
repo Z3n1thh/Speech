@@ -355,6 +355,32 @@ class TextToSpeech:
         self._temp_file = None
 
     def _speak_edge(self, text: str, *, highlight: bool) -> None:
+        from app.textutil import split_sentences
+
+        if highlight and self._on_word:
+            sentences = split_sentences(text)
+            if not sentences:
+                sentences = [(0, len(text), text)]
+            for index, (start, end, sentence) in enumerate(sentences, start=1):
+                if self._stop_flag.is_set():
+                    break
+                while self._paused.is_set() and not self._stop_flag.is_set():
+                    time.sleep(0.05)
+                if self._stop_flag.is_set():
+                    break
+                self._on_word(start, end, sentence)
+                self._status(f"Speaking (neural)… sentence {index}/{len(sentences)}")
+                self._play_edge_clip(sentence)
+            if not self._stop_flag.is_set():
+                self._status("Done")
+            return
+
+        self._status("Synthesizing neural voice...")
+        self._play_edge_clip(text)
+        if not self._stop_flag.is_set():
+            self._status("Done")
+
+    def _play_edge_clip(self, text: str) -> None:
         import edge_tts
         import win32com.client
 
@@ -362,12 +388,9 @@ class TextToSpeech:
         with self._rate_lock:
             edge_rate = rate_to_edge(self._rate)
 
-        if highlight and self._on_word:
-            self._on_word(0, len(text), text)
-
-        self._status("Synthesizing neural voice...")
         fd, path = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
+        self._cleanup_temp()
         self._temp_file = path
 
         async def _synthesize() -> None:
@@ -383,7 +406,8 @@ class TextToSpeech:
         player.settings.volume = int(self._volume * 100)
         player.URL = path
         player.controls.play()
-        self._status("Speaking (neural)...")
+        if "sentence" not in (getattr(self, "_status_msg", "") or ""):
+            self._status("Speaking (neural)...")
 
         while True:
             if self._stop_flag.is_set() and not self._paused.is_set():
@@ -401,5 +425,32 @@ class TextToSpeech:
             time.sleep(0.05)
 
         self._wmp = None
-        if not self._stop_flag.is_set():
-            self._status("Done")
+
+    def export_mp3(
+        self,
+        text: str,
+        dest_path: str,
+        *,
+        voice_id: str = "",
+        rate: int = 160,
+        on_status: StatusCallback | None = None,
+    ) -> str:
+        """Synthesize text to an MP3 file via Edge TTS. Returns dest path."""
+        import edge_tts
+
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("Nothing to export")
+
+        voice = voice_id or self._voice_id or "en-US-JennyNeural"
+        edge_rate = rate_to_edge(rate)
+        status = on_status or self._status
+        status("Exporting MP3...")
+
+        async def _save() -> None:
+            communicate = edge_tts.Communicate(text, voice=voice, rate=edge_rate)
+            await communicate.save(dest_path)
+
+        asyncio.run(_save())
+        status(f"Saved MP3: {dest_path}")
+        return dest_path

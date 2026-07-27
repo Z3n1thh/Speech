@@ -33,36 +33,92 @@ def pack_hint(lang: str) -> str:
     return f'Add-WindowsCapability -Online -Name "{code}"'
 
 
+def ui_lang_tip(lang: str) -> str:
+    """Short tip shown in the status bar for OCR language packs."""
+    return (
+        f"OCR tip: if results look wrong, install Windows OCR for '{lang}' "
+        f"(Admin PowerShell): {pack_hint(lang)}"
+    )
+
+
+def _ensure_rgb(image: Image.Image) -> Image.Image:
+    if image.mode not in ("RGB", "RGBA", "L"):
+        return image.convert("RGB")
+    if image.mode == "RGBA":
+        return image.convert("RGB")
+    return image
+
+
+def _scale_min(image: Image.Image, min_side: int) -> Image.Image:
+    width, height = image.size
+    side = min(width, height)
+    if side >= min_side:
+        return image
+    scale = max(2, int(min_side / max(side, 1)))
+    return image.resize((width * scale, height * scale), Image.Resampling.LANCZOS)
+
+
+def preprocess_variants(image: Image.Image) -> list[Image.Image]:
+    """Several preprocessing passes — pick the best OCR result later."""
+    base = _ensure_rgb(image)
+    variants: list[Image.Image] = []
+
+    # 1) Default: upscale + autocontrast + sharpen
+    v1 = _scale_min(base, 500)
+    g1 = ImageOps.grayscale(v1)
+    g1 = ImageOps.autocontrast(g1)
+    g1 = ImageEnhance.Contrast(g1).enhance(1.35)
+    g1 = g1.filter(ImageFilter.SHARPEN)
+    variants.append(g1.convert("RGB"))
+
+    # 2) Stronger contrast, larger upscale
+    v2 = _scale_min(base, 700)
+    g2 = ImageOps.grayscale(v2)
+    g2 = ImageOps.autocontrast(g2)
+    g2 = ImageEnhance.Contrast(g2).enhance(1.8)
+    g2 = ImageEnhance.Sharpness(g2).enhance(2.0)
+    variants.append(g2.convert("RGB"))
+
+    # 3) Inverted (light text on dark UI)
+    v3 = _scale_min(base, 500)
+    g3 = ImageOps.grayscale(v3)
+    g3 = ImageOps.invert(g3)
+    g3 = ImageOps.autocontrast(g3)
+    g3 = ImageEnhance.Contrast(g3).enhance(1.4)
+    variants.append(g3.convert("RGB"))
+
+    # 4) Threshold-ish via point
+    v4 = _scale_min(base, 600)
+    g4 = ImageOps.grayscale(v4)
+    g4 = ImageOps.autocontrast(g4)
+    g4 = g4.point(lambda p: 255 if p > 160 else 0)
+    variants.append(g4.convert("RGB"))
+
+    return variants
+
+
 def preprocess_image(image: Image.Image) -> Image.Image:
     """Improve contrast/sharpness for small or low-contrast screen text."""
-    if image.mode not in ("RGB", "RGBA", "L"):
-        image = image.convert("RGB")
-    elif image.mode == "RGBA":
-        image = image.convert("RGB")
+    return preprocess_variants(image)[0]
 
-    width, height = image.size
-    min_side = min(width, height)
-    if min_side < 500:
-        scale = max(2, int(500 / max(min_side, 1)))
-        image = image.resize(
-            (width * scale, height * scale),
-            Image.Resampling.LANCZOS,
-        )
 
-    gray = ImageOps.grayscale(image)
-    gray = ImageOps.autocontrast(gray)
-    gray = ImageEnhance.Contrast(gray).enhance(1.35)
-    gray = gray.filter(ImageFilter.SHARPEN)
-    return gray.convert("RGB")
+def _ocr_once(image: Image.Image, lang: str) -> str:
+    from winocr import recognize_pil_sync
+
+    result = recognize_pil_sync(image, lang)
+    if isinstance(result, dict):
+        text = result.get("text") or ""
+    else:
+        text = getattr(result, "text", "") or ""
+    return str(text).strip()
 
 
 def recognize_image(image: Image.Image, lang: str = "en") -> str:
-    """Return recognized text from a PIL image using Windows OCR."""
-    image = preprocess_image(image)
+    """Return recognized text from a PIL image using Windows OCR (multi-try)."""
     lang = (lang or "en").lower().strip()
 
     try:
-        from winocr import recognize_pil_sync
+        from winocr import recognize_pil_sync  # noqa: F401
     except ImportError as exc:
         raise OcrError(
             "winocr is not installed. Run: pip install winocr"
@@ -72,30 +128,36 @@ def recognize_image(image: Image.Image, lang: str = "en") -> str:
     if lang != "en":
         languages.append("en")
 
+    variants = preprocess_variants(image)
     last_error: Exception | None = None
-    text = ""
-    for code in languages:
-        try:
-            result = recognize_pil_sync(image, code)
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            continue
-        if isinstance(result, dict):
-            text = result.get("text") or ""
-        else:
-            text = getattr(result, "text", "") or ""
-        text = str(text).strip()
-        if text:
-            return text
+    best = ""
 
-    if last_error is not None and not text:
+    for prepared in variants:
+        for code in languages:
+            try:
+                text = _ocr_once(prepared, code)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                continue
+            if len(text) > len(best):
+                best = text
+            # Good enough early exit
+            if len(best) >= 24:
+                return best
+
+    if best:
+        return best
+
+    if last_error is not None:
         message = str(last_error).strip() or last_error.__class__.__name__
         raise OcrError(
             f"OCR failed for language '{lang}' ({message}).\n"
-            f"Install the Windows OCR pack in Admin PowerShell:\n{pack_hint(lang)}"
+            f"Install the Windows OCR pack in Admin PowerShell:\n{pack_hint(lang)}\n"
+            f"Tip: try switching OCR language in the app (sv/en/…)."
         ) from last_error
 
     raise OcrError(
         "No text found in the selected region. Try a larger/clearer area, "
-        f"or install OCR language '{lang}':\n{pack_hint(lang)}"
+        f"or install OCR language '{lang}':\n{pack_hint(lang)}\n"
+        "Tip: dark UI text may need a bigger selection; try OCR lang sv or en."
     )
