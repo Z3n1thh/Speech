@@ -9,33 +9,37 @@ import keyboard
 
 class HotkeyManager:
     def __init__(self) -> None:
-        self._hotkey: str | None = None
-        self._handle = None
+        self._handles: list[object] = []
+        self._bindings: dict[str, str] = {}
 
     @property
-    def hotkey(self) -> str | None:
-        return self._hotkey
+    def bindings(self) -> dict[str, str]:
+        return dict(self._bindings)
 
-    def register(self, hotkey: str, callback: Callable[[], None]) -> None:
+    def register_many(self, mapping: dict[str, Callable[[], None]]) -> None:
+        """Register multiple hotkeys. Values are callbacks keyed by hotkey string."""
         self.unregister()
-        normalized = hotkey.strip().lower()
-        if not normalized:
-            raise ValueError("Hotkey cannot be empty")
+        for hotkey, callback in mapping.items():
+            normalized = (hotkey or "").strip().lower()
+            if not normalized:
+                continue
 
-        def _wrapped() -> None:
-            callback()
+            def _wrapped(cb: Callable[[], None] = callback) -> None:
+                cb()
 
-        self._handle = keyboard.add_hotkey(normalized, _wrapped, suppress=False)
-        self._hotkey = normalized
+            handle = keyboard.add_hotkey(normalized, _wrapped, suppress=False)
+            self._handles.append(handle)
+            self._bindings[normalized] = normalized
 
     def unregister(self) -> None:
-        if self._handle is not None:
+        if self._handles:
             try:
-                keyboard.remove_hotkey(self._handle)
-            except (KeyError, ValueError, AttributeError):
-                try:
-                    keyboard.unhook_all_hotkeys()
-                except Exception:
-                    pass
-            self._handle = None
-            self._hotkey = None
+                keyboard.unhook_all_hotkeys()
+            except Exception:
+                for handle in self._handles:
+                    try:
+                        keyboard.remove_hotkey(handle)
+                    except Exception:
+                        pass
+        self._handles.clear()
+        self._bindings.clear()

@@ -17,6 +17,7 @@ def main() -> int:
     tray = TrayIcon(
         on_show=app.show_window,
         on_select=app.request_select_region,
+        on_selection=app.request_read_selection,
         on_quit=app.request_quit,
     )
     app.add_quit_callback(tray.stop)

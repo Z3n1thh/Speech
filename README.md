@@ -1,53 +1,60 @@
 # Screen Read-Aloud
 
-A free Windows helper for people who find reading hard: press a shortcut, draw a box around text on your screen, and hear it read aloud.
+Free and open-source Windows helper for people who find reading hard: mark or select text on screen, then hear it read aloud.
+
+**License:** [MIT](LICENSE)
 
 ## Download (Windows)
 
 1. Go to **[Releases](https://github.com/Z3n1thh/Speech/releases)**
 2. Download **`ScreenReadAloud-Windows.zip`**
-3. Unzip the folder
-4. Run **`ScreenReadAloud.exe`**
+3. Unzip → run **`ScreenReadAloud.exe`**
 
-Windows may show a SmartScreen warning for unsigned apps — choose **More info** → **Run anyway**.
-
-No Python install needed for the release build.
+Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway**.
 
 ## Features
 
-- **Global hotkey** (default `Ctrl+Shift+R`) to capture a screen region
-- **Windows built-in OCR** (`winocr`) — no paid API
-- **Offline speech** via Windows voices (`pyttsx3`)
-- **Optional higher-quality voices** via free Edge neural TTS (`edge-tts`, played with Windows Media Player)
-- Editable text preview, rate/volume controls, system tray
+- Screen **region OCR** (`Ctrl+Shift+R`)
+- **Selected text** reading (`Ctrl+Shift+S`)
+- Offline Windows voices only (no paid / gray-area cloud TTS)
+- Word highlighting while speaking
+- Pause / resume, rate & volume, history
+- Simple mode (big buttons)
+- Start with Windows
+- Swedish / English OCR language
 
-## Requirements
+### Hotkeys
 
-- Windows 10 or 11
-- A Windows OCR language pack (English is usually already present)
+| Action | Default |
+|---|---|
+| Select region (OCR) | `Ctrl+Shift+R` |
+| Read highlighted selection | `Ctrl+Shift+S` |
+| Stop | `Ctrl+Shift+X` |
+| Faster | `Ctrl+Shift+Up` |
+| Slower | `Ctrl+Shift+Down` |
 
-If OCR fails, install the language pack in **Admin PowerShell**:
+## Free & open-source stack
+
+| Piece | What | License / cost |
+|---|---|---|
+| App code | This repo | MIT |
+| UI | customtkinter | MIT |
+| Hotkeys | keyboard | MIT |
+| Screenshot | mss | MIT |
+| Tray | pystray | MIT / LGPL |
+| Images | Pillow | HPND |
+| OCR | Windows.Media.Ocr via winocr | Free Windows feature |
+| Speech | Windows SAPI via pyttsx3 | Free Windows feature + MPL-2.0 lib |
+
+No paid APIs. Edge/cloud TTS was removed so everything stays free and clearly legitimate.
+
+For Swedish OCR on Windows (Admin PowerShell):
 
 ```powershell
-Add-WindowsCapability -Online -Name "Language.OCR~~~en-US~0.0.1.0"
+Add-WindowsCapability -Online -Name "Language.OCR~~~sv-SE~0.0.1.0"
 ```
 
-## How to use
-
-1. Start the app (window + tray icon).
-2. Press **`Ctrl+Shift+R`** (or click **Select region**).
-3. Drag a rectangle over the words you want read.
-4. Review the recognized text (edit if needed).
-5. It speaks automatically if **Auto-speak** is on; otherwise click **Read**.
-
-### Tips
-
-- Use **Offline** engine when you have no internet (default).
-- Switch to **Edge** for clearer neural voices (needs internet).
-- Change the hotkey in the window and click **Apply hotkey**.
-- Closing the window hides to the tray; use the tray menu to quit.
-
-## Run from source (developers)
+## Run from source
 
 ```powershell
 cd path\to\Speech
@@ -57,7 +64,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-To rebuild the downloadable zip:
+Rebuild the zip:
 
 ```powershell
 pip install pyinstaller
@@ -66,10 +73,5 @@ pip install pyinstaller
 
 ## Privacy
 
-- OCR runs on your PC (Windows OCR).
-- Offline speech stays on your PC.
-- Edge TTS sends text to Microsoft’s free Edge online voices only when that engine is selected.
-
-## License
-
-Free to use for personal accessibility needs.
+- OCR and speech run on your PC
+- No account, no telemetry, no cloud TTS
