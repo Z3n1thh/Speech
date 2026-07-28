@@ -1,5 +1,5 @@
 @echo off
-REM Build a standalone Windows folder for Screen Read-Aloud
+REM Build a standalone Windows one-file exe for Screen Read-Aloud
 setlocal
 cd /d "%~dp0"
 
@@ -12,6 +12,7 @@ if not exist ".venv\Scripts\pyinstaller.exe" (
   --noconfirm ^
   --clean ^
   --windowed ^
+  --onefile ^
   --name ScreenReadAloud ^
   --collect-all customtkinter ^
   --collect-all edge_tts ^
@@ -28,10 +29,10 @@ if not exist ".venv\Scripts\pyinstaller.exe" (
 
 if errorlevel 1 exit /b 1
 
-powershell -NoProfile -Command ^
-  "Copy-Item -Force 'Install-ScreenReadAloud.ps1' 'dist\ScreenReadAloud\Install-ScreenReadAloud.ps1'; Compress-Archive -Path 'dist\ScreenReadAloud\*' -DestinationPath 'dist\ScreenReadAloud-Windows.zip' -Force"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\pack_release.ps1"
+if errorlevel 1 exit /b 1
 
 echo.
-echo Built: dist\ScreenReadAloud\ScreenReadAloud.exe
+echo Built: dist\ScreenReadAloud.exe
 echo Zip:   dist\ScreenReadAloud-Windows.zip
-echo Tip:   run Install-ScreenReadAloud.ps1 inside the unzipped folder
+echo Tip:   unzip, then run Install-ScreenReadAloud.ps1 OR double-click the exe

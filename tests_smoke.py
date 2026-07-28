@@ -48,6 +48,7 @@ def test_settings() -> None:
     assert "auto_detect_lang" in settings
     assert "reading_mode" in settings
     assert APP_VERSION.startswith("5.")
+    assert tuple(int(x) for x in APP_VERSION.split(".")[:2]) >= (5, 0)
     settings["theme"] = "dark"
     save_settings(settings)
     assert load_settings()["theme"] == "dark"

@@ -8,14 +8,23 @@ Free Windows helper for people who find reading hard: mark or select text (or op
 
 1. Open **[Releases](https://github.com/Z3n1thh/Speech/releases)**
 2. Download **`ScreenReadAloud-Windows.zip`**
-3. Unzip the folder
-4. Optional install (Start Menu + Desktop shortcuts):
+3. Unzip the folder (keep all files together)
+4. Open **`START_HERE.txt`**, then run **`Install-ScreenReadAloud.ps1`**
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\Install-ScreenReadAloud.ps1
    ```
-5. Or just run **`ScreenReadAloud.exe`**
+5. Or just double-click **`ScreenReadAloud.exe`** inside the unzipped folder
 
 Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway**.
+
+### If you see `pythonXXX.dll` / `_internal` errors
+
+That usually means only the `.exe` was moved (for example to the Desktop) without the rest of the app. Fix:
+
+1. Delete the broken copy
+2. Download the latest **`ScreenReadAloud-Windows.zip`** again
+3. Unzip and run **`Install-ScreenReadAloud.ps1`**
+4. Start the app from the new Desktop shortcut (not a lone `.exe` on the Desktop)
 
 ## Features
 
