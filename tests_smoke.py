@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PIL import Image, ImageDraw
 
+from app.memory import clear_memory, has_memory, load_memory, save_memory
 from app.config import APP_VERSION, load_settings, save_settings
 from app.ocr import recognize_image
 from app.tts import TextToSpeech, tokenize
@@ -63,17 +64,58 @@ def test_speak_ignores_while_busy() -> None:
     print("ok no echo while busy")
 
 
+def test_memory_continue() -> None:
+    clear_memory()
+    assert not has_memory()
+    save_memory("One. Two. Three.", offset=5, source="test")
+    mem = load_memory()
+    assert mem and mem["offset"] == 5 and has_memory()
+    clear_memory()
+    print("ok memory")
+
+
+def test_speak_start_offset_progress() -> None:
+    progressed: list[int] = []
+    done = {"yes": False}
+    tts = TextToSpeech()
+    text = "Alpha word. Beta word. Gamma word."
+    started = tts.speak(
+        text,
+        engine="offline",
+        rate=240,
+        highlight=False,
+        start_offset=12,
+        on_progress=lambda o: progressed.append(o),
+        on_done=lambda: done.__setitem__("yes", True),
+    )
+    assert started
+    import time
+
+    for _ in range(100):
+        if done["yes"]:
+            break
+        time.sleep(0.1)
+    assert done["yes"]
+    assert progressed and min(progressed) >= 12
+    print("ok start_offset progress", progressed[:5])
+
+
 def test_ui_import() -> None:
     from app.ui import App, OptionsWindow
+    from app.uninstall import install_dir, launch_uninstall
 
     assert App is not None and OptionsWindow is not None
+    assert install_dir().name == "ScreenReadAloud"
+    assert callable(launch_uninstall)
     print("ok ui import")
 
 
 if __name__ == "__main__":
     test_tokenize()
     test_settings()
+    test_memory_continue()
     test_ocr()
     test_speak_ignores_while_busy()
+    test_speak_start_offset_progress()
     test_ui_import()
     print("ALL TESTS PASSED")

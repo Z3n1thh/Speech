@@ -239,16 +239,20 @@ class TextToSpeech:
         volume: float = 1.0,
         voice_id: str = "",
         highlight: bool = True,
+        start_offset: int = 0,
+        on_progress: Callable[[int], None] | None = None,
         on_done: Callable[[], None] | None = None,
     ) -> bool:
         """Start speaking. Returns False if already busy (ignored)."""
-        text = (text or "").strip()
-        if not text:
+        text = text or ""
+        if not text.strip():
             self._status("Nothing to read")
             return False
 
+        start_offset = max(0, min(int(start_offset), len(text)))
+
         with self._speak_lock:
-            # Only one playback at a time — ignore extra Read clicks while busy
+            # Only one playback at a time — ignore extra clicks while busy
             if self.is_busy() and not self._stop_flag.is_set():
                 self._status("Already reading — press Stop first")
                 return False
@@ -272,15 +276,25 @@ class TextToSpeech:
             self._volume = max(0.0, min(1.0, float(volume)))
             self._voice_id = voice_id or ""
             self._engine_name = "edge" if engine == "edge" else "offline"
+            self._on_progress = on_progress
 
         def _run() -> None:
             try:
                 if session != self._session or self._stop_flag.is_set():
                     return
                 if self._engine_name == "edge":
-                    self._speak_edge(text, highlight=highlight, session=session)
+                    self._speak_edge(
+                        text,
+                        highlight=highlight,
+                        session=session,
+                        start_offset=start_offset,
+                    )
                 else:
-                    tokens = tokenize(text) if highlight else [(0, len(text), text)]
+                    tokens = tokenize(text) if (highlight or on_progress or start_offset) else [
+                        (0, len(text), text)
+                    ]
+                    if start_offset:
+                        tokens = [(s, e, w) for s, e, w in tokens if e > start_offset]
                     self._speak_offline_tokens(tokens, session=session)
             except Exception as exc:  # noqa: BLE001
                 if session != self._session or self._stop_flag.is_set():
@@ -288,7 +302,9 @@ class TextToSpeech:
                 if self._engine_name == "edge":
                     self._status(f"Neural voice failed ({exc}); using offline voice")
                     try:
-                        tokens = tokenize(text) if highlight else [(0, len(text), text)]
+                        tokens = tokenize(text)
+                        if start_offset:
+                            tokens = [(s, e, w) for s, e, w in tokens if e > start_offset]
                         self._speak_offline_tokens(tokens, session=session)
                     except Exception as offline_exc:  # noqa: BLE001
                         self._status(f"Speech failed: {offline_exc}")
@@ -303,6 +319,15 @@ class TextToSpeech:
         self._worker = threading.Thread(target=_run, daemon=True)
         self._worker.start()
         return True
+
+    def _report_progress(self, offset: int) -> None:
+        cb = getattr(self, "_on_progress", None)
+        if cb is None:
+            return
+        try:
+            cb(int(offset))
+        except Exception:
+            pass
 
     def _speak_offline_tokens(
         self, tokens: list[tuple[int, int, str]], *, session: int
@@ -330,6 +355,7 @@ class TextToSpeech:
 
                 if self._on_word:
                     self._on_word(start, end, word)
+                self._report_progress(start)
 
                 with self._rate_lock:
                     engine.setProperty("rate", self._rate)
@@ -374,34 +400,43 @@ class TextToSpeech:
                 pass
         self._temp_file = None
 
-    def _speak_edge(self, text: str, *, highlight: bool, session: int) -> None:
+    def _speak_edge(
+        self,
+        text: str,
+        *,
+        highlight: bool,
+        session: int,
+        start_offset: int = 0,
+    ) -> None:
         from app.textutil import split_sentences
 
-        if highlight and self._on_word:
-            sentences = split_sentences(text)
-            if not sentences:
-                sentences = [(0, len(text), text)]
-            for index, (start, end, sentence) in enumerate(sentences, start=1):
-                if session != self._session or self._stop_flag.is_set():
-                    break
-                while self._paused.is_set() and not self._stop_flag.is_set():
-                    if session != self._session:
-                        return
-                    time.sleep(0.05)
-                if session != self._session or self._stop_flag.is_set():
-                    break
-                self._on_word(start, end, sentence)
-                self._status(f"Speaking… {index}/{len(sentences)}")
-                self._play_edge_clip(sentence, session=session)
-            if session == self._session and not self._stop_flag.is_set():
-                self._status("Done")
-            return
+        sentences = split_sentences(text)
+        if start_offset:
+            sentences = [(s, e, t) for s, e, t in sentences if e > start_offset]
+        if not sentences:
+            chunk = text[start_offset:].strip()
+            if not chunk:
+                self._status("Nothing left to read")
+                return
+            sentences = [(start_offset, len(text), chunk)]
 
-        if session != self._session:
-            return
-        self._status("Synthesizing voice...")
-        self._play_edge_clip(text, session=session)
+        # Sentence-by-sentence so Stop/Continue can remember position
+        for index, (start, end, sentence) in enumerate(sentences, start=1):
+            if session != self._session or self._stop_flag.is_set():
+                break
+            while self._paused.is_set() and not self._stop_flag.is_set():
+                if session != self._session:
+                    return
+                time.sleep(0.05)
+            if session != self._session or self._stop_flag.is_set():
+                break
+            if highlight and self._on_word:
+                self._on_word(start, end, sentence)
+            self._report_progress(start)
+            self._status(f"Speaking… {index}/{len(sentences)}")
+            self._play_edge_clip(sentence, session=session)
         if session == self._session and not self._stop_flag.is_set():
+            self._report_progress(len(text))
             self._status("Done")
 
     def _play_edge_clip(self, text: str, *, session: int) -> None:

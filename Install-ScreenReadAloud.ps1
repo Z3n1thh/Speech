@@ -40,6 +40,10 @@ if (Test-Path $Internal) {
     if (Test-Path $StartHere) {
         Copy-Item -Force $StartHere (Join-Path $Target "START_HERE.txt")
     }
+    $Uninstall = Join-Path $Source "Uninstall-ScreenReadAloud.ps1"
+    if (Test-Path $Uninstall) {
+        Copy-Item -Force $Uninstall (Join-Path $Target "Uninstall-ScreenReadAloud.ps1")
+    }
 }
 
 $TargetExe = Join-Path $Target "ScreenReadAloud.exe"

@@ -15,6 +15,7 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 Copy-Item -Force $Exe (Join-Path $Stage "ScreenReadAloud.exe")
 Copy-Item -Force (Join-Path $Root "Install-ScreenReadAloud.ps1") (Join-Path $Stage "Install-ScreenReadAloud.ps1")
+Copy-Item -Force (Join-Path $Root "Uninstall-ScreenReadAloud.ps1") (Join-Path $Stage "Uninstall-ScreenReadAloud.ps1")
 
 $StartHere = @"
 Screen Read-Aloud — how to install
@@ -27,14 +28,11 @@ Screen Read-Aloud — how to install
 
 Or just double-click ScreenReadAloud.exe in THIS folder.
 
+To uninstall later:
+- Options → Uninstall app
+  OR run Uninstall-ScreenReadAloud.ps1
+
 If Windows SmartScreen appears: More info → Run anyway.
-
-If you see an error about pythonXXX.dll or _internal:
-- You probably moved only the .exe. Use this zip again and run the installer.
-- Or download the latest release from:
-  https://github.com/Z3n1thh/Speech/releases
-
-Need help: reopen the latest ScreenReadAloud-Windows.zip and start here.
 "@
 Set-Content -Encoding UTF8 -Path (Join-Path $Stage "START_HERE.txt") -Value $StartHere
 

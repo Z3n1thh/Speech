@@ -1,6 +1,6 @@
 # Screen Read-Aloud
 
-Lightweight Windows helper shaped like **Snipping Tool**: mark a screen region, hear the text once.
+Lightweight Windows helper shaped like **Snipping Tool**: mark a screen region, then Start / Stop / Continue reading.
 
 **License:** [MIT](LICENSE)
 
@@ -8,19 +8,20 @@ Lightweight Windows helper shaped like **Snipping Tool**: mark a screen region, 
 
 1. Open **[Releases](https://github.com/Z3n1thh/Speech/releases)**
 2. Download **`ScreenReadAloud-Windows.zip`**
-3. Unzip → run **`Install-ScreenReadAloud.ps1`** (or the `.exe`)
+3. Unzip → run **`Install-ScreenReadAloud.ps1`**
 
 ## How to use
 
-1. Press **+ New** (or `Ctrl+Shift+R`)
-2. Drag a rectangle over text
-3. It reads aloud once
-4. **Stop** / `Ctrl+Shift+X` to cancel
-5. **Options** — voice, volume, pitch, dark/light mode
+1. **+ New** (`Ctrl+Shift+R`) — drag a rectangle over text
+2. **Start** — read from the beginning
+3. **Stop** (`Ctrl+Shift+X`) — pause and remember position
+4. **Continue** — resume where you stopped
+5. **Options** — voice, volume, pitch, dark/light, **Uninstall**
 
-## Free stack
+## Uninstall
 
-MIT app code. Free/open-source libraries. OCR + offline speech stay on your PC; Edge neural voices need internet (no paid API key).
+- In the app: **Options → Uninstall app**
+- Or run `Uninstall-ScreenReadAloud.ps1` from the zip / install folder
 
 ## Run from source
 
@@ -29,8 +30,5 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
-```
-
-```powershell
 .\build_release.bat
 ```

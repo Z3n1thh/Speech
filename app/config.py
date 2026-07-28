@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "ScreenReadAloud"
-APP_VERSION = "6.1.0"
+APP_VERSION = "6.2.0"
 
 
 def _default_ocr_lang() -> str:
