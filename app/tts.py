@@ -19,7 +19,6 @@ def tokenize(text: str) -> list[tuple[int, int, str]]:
 
 
 def rate_to_edge(rate: int) -> str:
-    # 160 ~= +0%
     pct = int((int(rate) - 160) / 160 * 100)
     pct = max(-50, min(100, pct))
     return f"{'+' if pct >= 0 else ''}{pct}%"
@@ -43,6 +42,8 @@ class TextToSpeech:
         self._rate_lock = threading.Lock()
         self._wmp = None
         self._temp_file: str | None = None
+        self._session = 0
+        self._speak_lock = threading.Lock()
 
     def _status(self, message: str) -> None:
         self._on_status(message)
@@ -67,7 +68,6 @@ class TextToSpeech:
                 pass
 
     def list_voices(self) -> list[dict[str, str]]:
-        """Backward-compatible alias for offline voices."""
         return self.list_offline_voices()
 
     def list_edge_voices_sync(self, lang: str = "all") -> list[dict[str, str]]:
@@ -103,7 +103,6 @@ class TextToSpeech:
                     }
                 )
             if not filtered and lang_code not in ("", "all", "*"):
-                # Fallback: return English neural voices
                 for voice in voices:
                     short = str(voice.get("ShortName", ""))
                     locale = str(voice.get("Locale", ""))
@@ -153,18 +152,6 @@ class TextToSpeech:
                     "locale": "en-US",
                     "gender": "Male",
                 },
-                {
-                    "id": "en-GB-SoniaNeural",
-                    "name": "Microsoft Sonia Online (Natural) - English (United Kingdom)",
-                    "locale": "en-GB",
-                    "gender": "Female",
-                },
-                {
-                    "id": "en-GB-RyanNeural",
-                    "name": "Microsoft Ryan Online (Natural) - English (United Kingdom)",
-                    "locale": "en-GB",
-                    "gender": "Male",
-                },
             ]
 
     def list_edge_locales_sync(self) -> list[str]:
@@ -194,9 +181,11 @@ class TextToSpeech:
         return ""
 
     def stop(self, *, silent: bool = False) -> None:
-        self._stop_flag.set()
-        self._paused.clear()
-        self._stop_wmp()
+        with self._speak_lock:
+            self._session += 1
+            self._stop_flag.set()
+            self._paused.clear()
+            self._stop_wmp()
         if not silent:
             self._status("Stopped")
 
@@ -251,49 +240,77 @@ class TextToSpeech:
         voice_id: str = "",
         highlight: bool = True,
         on_done: Callable[[], None] | None = None,
-    ) -> None:
+    ) -> bool:
+        """Start speaking. Returns False if already busy (ignored)."""
         text = (text or "").strip()
         if not text:
             self._status("Nothing to read")
-            return
+            return False
 
-        self.stop(silent=True)
-        self._stop_flag.clear()
-        self._paused.clear()
-        with self._rate_lock:
-            self._rate = int(rate)
-        self._volume = max(0.0, min(1.0, float(volume)))
-        self._voice_id = voice_id or ""
-        self._engine_name = "edge" if engine == "edge" else "offline"
+        with self._speak_lock:
+            # Only one playback at a time — ignore extra Read clicks while busy
+            if self.is_busy() and not self._stop_flag.is_set():
+                self._status("Already reading — press Stop first")
+                return False
+
+            self._session += 1
+            session = self._session
+            self._stop_flag.set()
+            self._stop_wmp()
+            old = self._worker
+
+        if old is not None and old.is_alive() and old is not threading.current_thread():
+            old.join(timeout=0.4)
+
+        with self._speak_lock:
+            if session != self._session:
+                return False
+            self._stop_flag.clear()
+            self._paused.clear()
+            with self._rate_lock:
+                self._rate = int(rate)
+            self._volume = max(0.0, min(1.0, float(volume)))
+            self._voice_id = voice_id or ""
+            self._engine_name = "edge" if engine == "edge" else "offline"
 
         def _run() -> None:
             try:
+                if session != self._session or self._stop_flag.is_set():
+                    return
                 if self._engine_name == "edge":
-                    self._speak_edge(text, highlight=highlight)
+                    self._speak_edge(text, highlight=highlight, session=session)
                 else:
                     tokens = tokenize(text) if highlight else [(0, len(text), text)]
-                    self._speak_offline_tokens(tokens)
+                    self._speak_offline_tokens(tokens, session=session)
             except Exception as exc:  # noqa: BLE001
-                if self._engine_name == "edge" and not self._stop_flag.is_set():
+                if session != self._session or self._stop_flag.is_set():
+                    return
+                if self._engine_name == "edge":
                     self._status(f"Neural voice failed ({exc}); using offline voice")
                     try:
                         tokens = tokenize(text) if highlight else [(0, len(text), text)]
-                        self._speak_offline_tokens(tokens)
+                        self._speak_offline_tokens(tokens, session=session)
                     except Exception as offline_exc:  # noqa: BLE001
                         self._status(f"Speech failed: {offline_exc}")
-                elif not self._stop_flag.is_set():
+                else:
                     self._status(f"Speech failed: {exc}")
             finally:
-                self._cleanup_temp()
-                if on_done:
+                if session == self._session:
+                    self._cleanup_temp()
+                if on_done and session == self._session:
                     on_done()
 
         self._worker = threading.Thread(target=_run, daemon=True)
         self._worker.start()
+        return True
 
-    def _speak_offline_tokens(self, tokens: list[tuple[int, int, str]]) -> None:
+    def _speak_offline_tokens(
+        self, tokens: list[tuple[int, int, str]], *, session: int
+    ) -> None:
         import pyttsx3
 
+        if session != self._session:
+            return
         self._status("Speaking (offline)...")
         engine = pyttsx3.init()
         try:
@@ -302,9 +319,13 @@ class TextToSpeech:
                 engine.setProperty("voice", self._voice_id)
 
             for start, end, word in tokens:
+                if session != self._session or self._stop_flag.is_set():
+                    break
                 while self._paused.is_set() and not self._stop_flag.is_set():
-                    threading.Event().wait(0.05)
-                if self._stop_flag.is_set():
+                    if session != self._session:
+                        break
+                    time.sleep(0.05)
+                if session != self._session or self._stop_flag.is_set():
                     break
 
                 if self._on_word:
@@ -316,7 +337,7 @@ class TextToSpeech:
                 engine.say(word)
                 engine.startLoop(False)
                 while engine.isBusy():
-                    if self._stop_flag.is_set() or self._paused.is_set():
+                    if session != self._session or self._stop_flag.is_set() or self._paused.is_set():
                         engine.stop()
                         break
                     engine.iterate()
@@ -325,13 +346,7 @@ class TextToSpeech:
                 except Exception:
                     pass
 
-                if self._stop_flag.is_set():
-                    break
-                if self._paused.is_set():
-                    while self._paused.is_set() and not self._stop_flag.is_set():
-                        threading.Event().wait(0.05)
-
-            if not self._stop_flag.is_set() and not self._paused.is_set():
+            if session == self._session and not self._stop_flag.is_set() and not self._paused.is_set():
                 self._status("Done")
         finally:
             try:
@@ -345,6 +360,11 @@ class TextToSpeech:
                 self._wmp.controls.stop()
             except Exception:
                 pass
+            try:
+                self._wmp.close()
+            except Exception:
+                pass
+            self._wmp = None
 
     def _cleanup_temp(self) -> None:
         if self._temp_file and os.path.exists(self._temp_file):
@@ -354,7 +374,7 @@ class TextToSpeech:
                 pass
         self._temp_file = None
 
-    def _speak_edge(self, text: str, *, highlight: bool) -> None:
+    def _speak_edge(self, text: str, *, highlight: bool, session: int) -> None:
         from app.textutil import split_sentences
 
         if highlight and self._on_word:
@@ -362,27 +382,34 @@ class TextToSpeech:
             if not sentences:
                 sentences = [(0, len(text), text)]
             for index, (start, end, sentence) in enumerate(sentences, start=1):
-                if self._stop_flag.is_set():
+                if session != self._session or self._stop_flag.is_set():
                     break
                 while self._paused.is_set() and not self._stop_flag.is_set():
+                    if session != self._session:
+                        return
                     time.sleep(0.05)
-                if self._stop_flag.is_set():
+                if session != self._session or self._stop_flag.is_set():
                     break
                 self._on_word(start, end, sentence)
-                self._status(f"Speaking (neural)… sentence {index}/{len(sentences)}")
-                self._play_edge_clip(sentence)
-            if not self._stop_flag.is_set():
+                self._status(f"Speaking… {index}/{len(sentences)}")
+                self._play_edge_clip(sentence, session=session)
+            if session == self._session and not self._stop_flag.is_set():
                 self._status("Done")
             return
 
-        self._status("Synthesizing neural voice...")
-        self._play_edge_clip(text)
-        if not self._stop_flag.is_set():
+        if session != self._session:
+            return
+        self._status("Synthesizing voice...")
+        self._play_edge_clip(text, session=session)
+        if session == self._session and not self._stop_flag.is_set():
             self._status("Done")
 
-    def _play_edge_clip(self, text: str) -> None:
+    def _play_edge_clip(self, text: str, *, session: int) -> None:
         import edge_tts
         import win32com.client
+
+        if session != self._session or self._stop_flag.is_set():
+            return
 
         voice = self._voice_id or "en-US-JennyNeural"
         with self._rate_lock:
@@ -398,7 +425,7 @@ class TextToSpeech:
             await communicate.save(path)
 
         asyncio.run(_synthesize())
-        if self._stop_flag.is_set():
+        if session != self._session or self._stop_flag.is_set():
             return
 
         player = win32com.client.Dispatch("WMPlayer.OCX")
@@ -406,11 +433,10 @@ class TextToSpeech:
         player.settings.volume = int(self._volume * 100)
         player.URL = path
         player.controls.play()
-        if "sentence" not in (getattr(self, "_status_msg", "") or ""):
-            self._status("Speaking (neural)...")
+        self._status("Speaking...")
 
         while True:
-            if self._stop_flag.is_set() and not self._paused.is_set():
+            if session != self._session or (self._stop_flag.is_set() and not self._paused.is_set()):
                 try:
                     player.controls.stop()
                 except Exception:
@@ -424,33 +450,5 @@ class TextToSpeech:
                 break
             time.sleep(0.05)
 
-        self._wmp = None
-
-    def export_mp3(
-        self,
-        text: str,
-        dest_path: str,
-        *,
-        voice_id: str = "",
-        rate: int = 160,
-        on_status: StatusCallback | None = None,
-    ) -> str:
-        """Synthesize text to an MP3 file via Edge TTS. Returns dest path."""
-        import edge_tts
-
-        text = (text or "").strip()
-        if not text:
-            raise ValueError("Nothing to export")
-
-        voice = voice_id or self._voice_id or "en-US-JennyNeural"
-        edge_rate = rate_to_edge(rate)
-        status = on_status or self._status
-        status("Exporting MP3...")
-
-        async def _save() -> None:
-            communicate = edge_tts.Communicate(text, voice=voice, rate=edge_rate)
-            await communicate.save(dest_path)
-
-        asyncio.run(_save())
-        status(f"Saved MP3: {dest_path}")
-        return dest_path
+        if self._wmp is player:
+            self._wmp = None

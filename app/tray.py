@@ -28,12 +28,10 @@ class TrayIcon:
         *,
         on_show: Callable[[], None],
         on_select: Callable[[], None],
-        on_selection: Callable[[], None],
         on_quit: Callable[[], None],
     ) -> None:
         self._on_show = on_show
         self._on_select = on_select
-        self._on_selection = on_selection
         self._on_quit = on_quit
         self._icon: pystray.Icon | None = None
         self._thread: threading.Thread | None = None
@@ -42,7 +40,6 @@ class TrayIcon:
         menu = pystray.Menu(
             pystray.MenuItem("Show", lambda: self._on_show(), default=True),
             pystray.MenuItem("Select region", lambda: self._on_select()),
-            pystray.MenuItem("Read selection", lambda: self._on_selection()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", lambda: self._quit()),
         )

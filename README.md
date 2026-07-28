@@ -1,6 +1,6 @@
 # Screen Read-Aloud
 
-Free Windows helper for people who find reading hard: mark or select text (or open a PDF), then hear it read aloud.
+Free Windows helper: mark a screen region, then hear the text read aloud **once**.
 
 **License:** [MIT](LICENSE)
 
@@ -19,39 +19,15 @@ Windows SmartScreen may warn on unsigned apps — **More info** → **Run anyway
 
 ### If you see `pythonXXX.dll` / `_internal` errors
 
-That usually means only the `.exe` was moved (for example to the Desktop) without the rest of the app. Fix:
+Download the latest zip again, unzip, and run the installer. Use the Desktop shortcut — don’t copy only the `.exe`.
 
-1. Delete the broken copy
-2. Download the latest **`ScreenReadAloud-Windows.zip`** again
-3. Unzip and run **`Install-ScreenReadAloud.ps1`**
-4. Start the app from the new Desktop shortcut (not a lone `.exe` on the Desktop)
+## How to use
 
-## Features
-
-- Screen **region OCR** (`Ctrl+Shift+R`) with multi-try preprocessing + OCR tips
-- **Selected text** (`Ctrl+Shift+S`)
-- **PDF text** reading + **OCR for scanned/image PDFs** (page by page)
-- **Continue** / memory — resume where you stopped
-- **Profiles** (e.g. Swedish slow / English fast)
-- **Reading mode** — nearly fullscreen, text + play
-- **MP3 export** — save narration as an audiobook file
-- **Auto language** (sv/en) switches OCR + voice
-- **Sentence highlight** while speaking (including Edge neural voices)
-- **Check updates** against GitHub Releases
-- Neural **Edge voices** (default) + offline Windows voices
-- Voice filter for **all languages**, favorites (★), and **Preview**
-- Dark/light high-contrast theme
-- Simple mode, quiet mode (tray after speak), autostart, history
-
-### Hotkeys
-
-| Action | Default |
-|---|---|
-| Select region (OCR) | `Ctrl+Shift+R` |
-| Read highlighted selection | `Ctrl+Shift+S` |
-| Stop | `Ctrl+Shift+X` |
-| Faster | `Ctrl+Shift+Up` |
-| Slower | `Ctrl+Shift+Down` |
+1. Click **Select region** (or `Ctrl+Shift+R`)
+2. Drag a box over the text
+3. The app reads it **once** (extra clicks while speaking are ignored)
+4. Press **Stop** (`Ctrl+Shift+X`) to cancel
+5. Open **Options** for voice, volume, and dark/light mode
 
 ## Free stack
 
