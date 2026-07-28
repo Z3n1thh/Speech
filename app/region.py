@@ -37,38 +37,43 @@ class RegionSelector:
             overlay.attributes("-alpha", 0.35)
         except tk.TclError:
             pass
-        overlay.configure(bg="#1a1a1a", cursor="crosshair")
+        overlay.configure(bg="#000000", cursor="crosshair")
 
         canvas = tk.Canvas(
             overlay,
             width=width,
             height=height,
             highlightthickness=0,
-            bg="#1a1a1a",
+            bg="#000000",
         )
         canvas.pack(fill="both", expand=True)
 
+        # Soft dim like Snipping Tool
+        canvas.create_rectangle(0, 0, width, height, fill="#000000", outline="")
+
         hint = canvas.create_text(
             width // 2,
-            48,
-            text="Drag to select text area  ·  Esc to cancel",
-            fill="#f5f5f5",
-            font=("Segoe UI", 16),
+            56,
+            text="Drag to select text to read  ·  Esc to cancel",
+            fill="#ffffff",
+            font=("Segoe UI Semibold", 15),
         )
 
-        state = {"x0": 0, "y0": 0, "rect": None}
+        state = {"x0": 0, "y0": 0, "rect": None, "fill": None}
 
         def on_press(event: tk.Event) -> None:
             state["x0"], state["y0"] = event.x, event.y
             if state["rect"] is not None:
                 canvas.delete(state["rect"])
+            if state["fill"] is not None:
+                canvas.delete(state["fill"])
+            state["fill"] = canvas.create_rectangle(
+                event.x, event.y, event.x, event.y,
+                outline="", fill="#ffffff", stipple="gray25",
+            )
             state["rect"] = canvas.create_rectangle(
-                event.x,
-                event.y,
-                event.x,
-                event.y,
-                outline="#4fc3f7",
-                width=2,
+                event.x, event.y, event.x, event.y,
+                outline="#60cdff", width=2,
             )
             canvas.itemconfigure(hint, state="hidden")
 
@@ -76,6 +81,8 @@ class RegionSelector:
             if state["rect"] is None:
                 return
             canvas.coords(state["rect"], state["x0"], state["y0"], event.x, event.y)
+            if state["fill"] is not None:
+                canvas.coords(state["fill"], state["x0"], state["y0"], event.x, event.y)
 
         def finish(image: Image.Image | None) -> None:
             result["image"] = image
