@@ -16,6 +16,8 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item -Force $Exe (Join-Path $Stage "ScreenReadAloud.exe")
 Copy-Item -Force (Join-Path $Root "Install-ScreenReadAloud.ps1") (Join-Path $Stage "Install-ScreenReadAloud.ps1")
 Copy-Item -Force (Join-Path $Root "Uninstall-ScreenReadAloud.ps1") (Join-Path $Stage "Uninstall-ScreenReadAloud.ps1")
+Copy-Item -Force (Join-Path $Root "LICENSE") (Join-Path $Stage "LICENSE")
+Copy-Item -Force (Join-Path $Root "THIRD_PARTY_NOTICES.md") (Join-Path $Stage "THIRD_PARTY_NOTICES.md")
 
 $StartHere = @"
 Screen Read-Aloud — how to install
@@ -31,6 +33,10 @@ Or just double-click ScreenReadAloud.exe in THIS folder.
 To uninstall later:
 - Options → Uninstall app
   OR run Uninstall-ScreenReadAloud.ps1
+
+Licenses in this folder:
+- LICENSE (app code, MIT)
+- THIRD_PARTY_NOTICES.md (bundled libraries + Edge/Windows notes)
 
 If Windows SmartScreen appears: More info → Run anyway.
 "@

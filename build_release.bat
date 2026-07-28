@@ -24,7 +24,6 @@ if not exist ".venv\Scripts\pyinstaller.exe" (
   --hidden-import=keyboard ^
   --hidden-import=mss ^
   --hidden-import=pyttsx3.drivers.sapi5 ^
-  --collect-all pymupdf ^
   main.py
 
 if errorlevel 1 exit /b 1

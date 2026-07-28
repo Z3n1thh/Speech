@@ -36,13 +36,11 @@ if (Test-Path $Internal) {
     Copy-Item -Path (Join-Path $Source "*") -Destination $Target -Recurse -Force
 } else {
     Copy-Item -Force $Exe (Join-Path $Target "ScreenReadAloud.exe")
-    $StartHere = Join-Path $Source "START_HERE.txt"
-    if (Test-Path $StartHere) {
-        Copy-Item -Force $StartHere (Join-Path $Target "START_HERE.txt")
-    }
-    $Uninstall = Join-Path $Source "Uninstall-ScreenReadAloud.ps1"
-    if (Test-Path $Uninstall) {
-        Copy-Item -Force $Uninstall (Join-Path $Target "Uninstall-ScreenReadAloud.ps1")
+    foreach ($name in @("START_HERE.txt", "Uninstall-ScreenReadAloud.ps1", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
+        $src = Join-Path $Source $name
+        if (Test-Path $src) {
+            Copy-Item -Force $src (Join-Path $Target $name)
+        }
     }
 }
 

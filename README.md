@@ -2,7 +2,7 @@
 
 Lightweight Windows helper shaped like **Snipping Tool**: mark a screen region, then Start / Stop / Continue reading.
 
-**License:** [MIT](LICENSE)
+**License:** [MIT](LICENSE) · **Third-party:** [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
 ## Download (Windows)
 
@@ -22,6 +22,14 @@ Lightweight Windows helper shaped like **Snipping Tool**: mark a screen region, 
 
 - In the app: **Options → Uninstall app**
 - Or run `Uninstall-ScreenReadAloud.ps1` from the zip / install folder
+
+## Free stack / third-party
+
+- App code is **MIT**
+- Dependencies are free/open-source libraries (see **THIRD_PARTY_NOTICES.md**)
+- OCR and offline speech use built-in **Windows** features on your PC
+- Optional **Edge neural voices** need internet and follow Microsoft’s terms (no paid API key is included)
+- **PyMuPDF was removed** from this project to avoid AGPL redistribution issues
 
 ## Run from source
 
