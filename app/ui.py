@@ -327,7 +327,7 @@ class App(ctk.CTk):
         self._speaking = False
         self._on_quit_callbacks: list[Callable[[], None]] = []
         self._ui_queue: list[Callable[[], None]] = []
-        self._options: OptionsWindow | None = None
+        self._options_window: OptionsWindow | None = None
         self._last_text = ""
         self._read_offset = 0
 
@@ -505,10 +505,10 @@ class App(ctk.CTk):
         self.focus_force()
 
     def open_options(self) -> None:
-        if self._options is not None and self._options.winfo_exists():
-            self._options.focus_force()
+        if self._options_window is not None and self._options_window.winfo_exists():
+            self._options_window.focus_force()
             return
-        self._options = OptionsWindow(self)
+        self._options_window = OptionsWindow(self)
 
     def _register_hotkeys(self) -> None:
         mapping = {
