@@ -13,10 +13,11 @@ Lightweight Windows helper shaped like **Snipping Tool**: mark a screen region, 
 ## How to use
 
 1. **+ New** (`Ctrl+Shift+R`) — drag a rectangle over text
-2. **Start** — read from the beginning
-3. **Stop** (`Ctrl+Shift+X`) — pause and remember position
-4. **Continue** — resume where you stopped
-5. **Options** — voice, volume, pitch, dark/light, **Uninstall**
+2. Marked text appears in the preview; **yellow** = current word/sentence, **green** = already read
+3. **Start** — read from the beginning
+4. **Stop** (`Ctrl+Shift+X`) — pause and remember position
+5. **Continue** — resume where you stopped
+6. **Options** — Swedish/English Edge voices, volume, pitch, dark/light, **Uninstall**
 
 ## Uninstall
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "ScreenReadAloud"
-APP_VERSION = "6.2.2"
+APP_VERSION = "6.3.0"
 
 
 def _default_ocr_lang() -> str:
@@ -22,6 +22,10 @@ def _default_ocr_lang() -> str:
     return "en"
 
 
+def _default_edge_voice() -> str:
+    return "sv-SE-SofieNeural" if _default_ocr_lang() == "sv" else "en-US-JennyNeural"
+
+
 DEFAULTS: dict[str, Any] = {
     "hotkey_region": "ctrl+shift+r",
     "hotkey_stop": "ctrl+shift+x",
@@ -29,11 +33,11 @@ DEFAULTS: dict[str, Any] = {
     "rate": 160,
     "volume": 1.0,
     "offline_voice": "",
-    "edge_voice": "en-US-JennyNeural",
+    "edge_voice": _default_edge_voice(),
     "voice_filter": "sv" if _default_ocr_lang() == "sv" else "en",
     "ocr_lang": _default_ocr_lang(),
     "theme": "dark",  # dark | light
-    "font_size": 18,
+    "font_size": 16,
 }
 
 
